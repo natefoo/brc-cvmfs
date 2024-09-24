@@ -1,0 +1,15 @@
+---
+
+gravity:
+  #virtualenv: /home/nate/brc/none/.venv
+  gunicorn:
+    bind: '127.0.0.1:8080'
+  celery:
+    # FIXME: might need it actually, w/ results backend, meh
+    enable: false
+    enable_beat: false
+
+galaxy:
+  admin_users: brc@galaxyproject.org
+  bootstrap_admin_api_key: c0ffee
+  conda_auto_init: false
