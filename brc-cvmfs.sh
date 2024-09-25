@@ -258,42 +258,29 @@ function verify_cvmfs_revision() {
     log "Verifying that CVMFS Client and Stratum 0 are in sync"
     local cvmfs_io_sock="${WORKDIR}/cvmfs-cache/${REPO}/cvmfs_io.${REPO}"
     local stratum0_published_url="http://${REPO_STRATUM0}/cvmfs/${REPO}/.cvmfspublished"
-    local client_rev=$(cvmfs_talk -p "$cvmfs_io_sock" revision)
-    local stratum0_rev=$(curl -s "$stratum0_published_url" | awk -F '^--$' '{print $1} NF>1{exit}' | grep '^S' | sed 's/^S//')
-    if [ -z "$client_rev" ]; then
-        log_exit_error "Failed to detect client revision"
-    elif [ -z "$stratum0_rev" ]; then
-        log_exit_error "Failed to detect Stratum 0 revision"
-    elif [ "$client_rev" -ne "$stratum0_rev" ]; then
-        log_exit_error "Client revision '${client_rev}' does not match Stratum 0 revision '${stratum0_rev}'"
-    fi
-
-    log "${REPO} is revision ${client_rev}"
-}
-
-
-function verify_cvmfs_revision_priv() {
-    log "Verifying that CVMFS Client and Stratum 0 are in sync"
-    pushd "/cvmfs/${REPO}" >/dev/null ; popd >/dev/null
-    local stratum0_published_url="http://${REPO_STRATUM0}/cvmfs/${REPO}/.cvmfspublished"
-    local client_rev=$(cvmfs_config stat "$REPO" | awk 'FNR==1 {for(i=1;i<=NF;i++) {if($i == "REVISION") {next}}} {print $i}')
-    local stratum0_rev=$(curl -s "$stratum0_published_url" | awk -F '^--$' '{print $1} NF>1{exit}' | grep '^S' | sed 's/^S//')
-
-    if [ -z "$client_rev" ]; then
-        log_exit_error "Failed to detect client revision"
-    elif [ -z "$stratum0_rev" ]; then
-        log_exit_error "Failed to detect Stratum 0 revision"
-    elif [ "$client_rev" -ne "$stratum0_rev" ]; then
-        log_exit_error "Client revision '${client_rev}' does not match Stratum 0 revision '${stratum0_rev}'"
-    fi
-
-    log "${REPO} is revision ${client_rev}"
+    local client_rev=-1
+    local stratum0_rev=0
+    while [ "$client_rev" -ne "$stratum0_rev" ]; do
+        log_exec cvmfs_talk -p "$cvmfs_io_sock" remount sync
+        client_rev=$(cvmfs_talk -p "$cvmfs_io_sock" revision)
+        stratum0_rev=$(curl -s "$stratum0_published_url" | awk -F '^--$' '{print $1} NF>1{exit}' | grep '^S' | sed 's/^S//')
+        if [ -z "$client_rev" ]; then
+            log_exit_error "Failed to detect client revision"
+        elif [ -z "$stratum0_rev" ]; then
+            log_exit_error "Failed to detect Stratum 0 revision"
+        elif [ "$client_rev" -ne "$stratum0_rev" ]; then
+            log_debug "Client revision '${client_rev}' does not match Stratum 0 revision '${stratum0_rev}'"
+            sleep 20
+        else
+            log "${REPO} is revision ${client_rev}"
+            break
+        fi
+    done
 }
 
 
 function mount_overlay() {
     log "Mounting OverlayFS/CVMFS"
-    log_debug "\$JOB_NAME: ${JOB_NAME}, \$WORKSPACE: ${WORKSPACE}, \$BUILD_NUMBER: ${BUILD_NUMBER}"
     log_exec mkdir -p "$OVERLAYFS_LOWER" "$OVERLAYFS_UPPER" "$OVERLAYFS_WORK" "$OVERLAYFS_MOUNT" "$CVMFS_CACHE"
     #log_exec cvmfs2 -o config=cvmfs-fuse.conf,allow_root "$REPO" "$OVERLAYFS_LOWER"
     log_exec cvmfs2 -o config=cvmfs-fuse.conf "$REPO" "$OVERLAYFS_LOWER"
@@ -306,6 +293,15 @@ function mount_overlay() {
         -o "lowerdir=${OVERLAYFS_LOWER},upperdir=${OVERLAYFS_UPPER},workdir=${OVERLAYFS_WORK}" \
         "$OVERLAYFS_MOUNT"
     LOCAL_OVERLAYFS_MOUNTED=true
+}
+
+
+function clean_overlay() {
+    log "Remounting OverlayFS/CVMFS for cleaning"
+    unmount_overlay
+    log "Cleaning OverlayFS"
+    log_exec rm -rf "$OVERLAYFS_LOWER" "$OVERLAYFS_UPPER" "$OVERLAYFS_WORK" "$OVERLAYFS_MOUNT" "$CVMFS_CACHE"
+    mount_overlay
 }
 
 
@@ -422,26 +418,6 @@ function create_brc_user() {
 }
 
 
-#function wait_for_cvmfs_sync() {
-#    # TODO merge with verify_cvmfs_revision() used by build side
-#    # TODO: could avoid the hardcoding by using ansible but the output is harder to process
-#    local stratum0_published_url="http://${REPO_STRATUM0}/cvmfs/${REPO}/.cvmfspublished"
-#    while true; do
-#        # ensure it's mounted
-#        ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -l rocky -i ~/.ssh/id_rsa_idc_jetstream2_cvmfs idc-build ls /cvmfs/${REPO} >/dev/null
-#        local client_rev=$(ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -l rocky -i ~/.ssh/id_rsa_idc_jetstream2_cvmfs idc-build sudo cvmfs_talk -i ${REPO} revision)
-#        local stratum0_rev=$(curl -s "$stratum0_published_url" | awk -F '^--$' '{print $1} NF>1{exit}' | grep '^S' | sed 's/^S//')
-#        if [ "$client_rev" -eq "$stratum0_rev" ]; then
-#            log "${REPO} is revision ${client_rev}"
-#            break
-#        else
-#            log_debug "Builder client revision '${client_rev}' does not match Stratum 0 revision '${stratum0_rev}'"
-#            sleep 60
-#        fi
-#    done
-#}
-
-
 function wait_for_galaxy() {
     log "Waiting for Galaxy"
     log_exec "${EPHEMERIS_BIN}/galaxy-wait" -v -g "$GALAXY_URL" --timeout 180 || {
@@ -524,18 +500,16 @@ function ucsc_fasta_url() {
 }
 
 
-function run_data_managers() {
-    local dm_config run_id
-    for dm_config in "${DM_CONFIGS}/"*; do
-        run_id=$(basename $dm_config .yaml)
-        log "Running Data Manager for: $run_id"
-        log_exec "${EPHEMERIS_BIN}/run-data-managers" -g "$GALAXY_URL" -a "$GALAXY_USER_API_KEY" \
-            --config "$dm_config" \
-            --data-manager-mode bundle \
-            --history-name "brc-${run_id}"
-        # FIXME: testing
-        break
-    done
+function run_data_manager() {
+    local dm="$1"
+    local asm_id="$2"
+    local run_id="${dm}-${asm_id}"
+    local dm_config="${DM_CONFIGS}/${run_id}.yaml"
+    log "Running Data Manager for: $run_id"
+    log_exec "${EPHEMERIS_BIN}/run-data-managers" -g "$GALAXY_URL" -a "$GALAXY_USER_API_KEY" \
+        --config "$dm_config" \
+        --data-manager-mode bundle \
+        --history-name "brc-${run_id}"
 }
 
 
@@ -549,24 +523,22 @@ function update_tool_data_table_conf() {
 }
 
 
-function import_tool_data_bundles() {
-    local dm_config run_id bundle_uri
-    for dm_config in "${DM_CONFIGS}/"*; do
-        run_id=$(basename $dm_config .yaml)
-        log "Importing bundle for: '$run_id'"
-        bundle_uri="$(log_exec ${EPHEMERIS_BIN}/python3 get-bundle-url.py --history-name "brc-${run_id}" --galaxy-api-key="$GALAXY_USER_API_KEY")"
-        [ -n "$bundle_uri" ] || log_exit_error "Could not determine bundle URI!"
-        log_debug "bundle URI is: $bundle_uri"
-        log_exec bwrap --bind / / \
-            --dev-bind /dev /dev \
-            --bind "$OVERLAYFS_MOUNT" "/cvmfs/${REPO}" -- \
-                ${GALAXY_MAINTENANCE_SCRIPTS_BIN}/galaxy-import-data-bundle \
-                    --tool-data-path "/cvmfs/${REPO}/data" \
-                    --data-table-config-path "/cvmfs/${REPO}/config/tool_data_table_conf.xml" \
-                    "$bundle_uri"
-        # FIXME: testing
-        break
-    done
+function import_tool_data_bundle() {
+    local dm="$1"
+    local asm_id="$2"
+    local run_id="${dm}-${asm_id}"
+    local bundle_uri
+    log "Importing bundle for: $run_id"
+    bundle_uri="$(log_exec ${EPHEMERIS_BIN}/python3 get-bundle-url.py --history-name "brc-${run_id}" --galaxy-api-key="$GALAXY_USER_API_KEY")"
+    [ -n "$bundle_uri" ] || log_exit_error "Could not determine bundle URI!"
+    log_debug "bundle URI is: $bundle_uri"
+    log_exec bwrap --bind / / \
+        --dev-bind /dev /dev \
+        --bind "$OVERLAYFS_MOUNT" "/cvmfs/${REPO}" -- \
+            ${GALAXY_MAINTENANCE_SCRIPTS_BIN}/galaxy-import-data-bundle \
+                --tool-data-path "/cvmfs/${REPO}/data" \
+                --data-table-config-path "/cvmfs/${REPO}/config/tool_data_table_conf.xml" \
+                "$bundle_uri"
 }
 
 
@@ -637,13 +609,16 @@ function main() {
         run_galaxy
         create_brc_user
         install_data_managers
-        run_data_managers
-        update_tool_data_table_conf
         setup_galaxy_maintenance_scripts
-        import_tool_data_bundles
-        check_for_repo_changes
-        post_import
-    elif [ "${#MISSING_ASSEMBLY_LIST[@]}" -gt 0 ]; then
+        update_tool_data_table_conf
+        for asm_id in "${MISSING_ASSEMBLY_LIST[@]}"; do
+            run_data_manager 'fetch' "$asm_id"
+            import_tool_data_bundle 'fetch' "$asm_id"
+            check_for_repo_changes
+            post_import
+            clean_overlay
+        done
+    elif [ "${#MISSING_INDEX_LIST[@]}" -gt 0 ]; then
         echo "NOT IMPLEMENTED"
         exit 1
     fi
