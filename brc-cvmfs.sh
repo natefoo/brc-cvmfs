@@ -23,8 +23,8 @@ ASSEMBLY_LIST_URL="https://${HGDOWNLOAD}/hubs/BRC/assemblyList.json"
 INDEXER_LIST=(
     bowtie1
     bowtie2
+    bwa-mem
 )
-#    bwa-mem
 #    bwa-mem2
 #    star
 #    hisat2
@@ -43,6 +43,7 @@ declare -rA INDEXER_DM_LIST=(
     ['fetch']='devteam/data_manager_fetch_genome_dbkeys_all_fasta/data_manager_fetch_genome_all_fasta_dbkey'
     ['bowtie1']='iuc/data_manager_bowtie_index_builder/bowtie_index_builder_data_manager'
     ['bowtie2']='devteam/data_manager_bowtie2_index_builder/bowtie2_index_builder_data_manager'
+    ['bwa-mem']='devteam/data_manager_bwa_mem_index_builder/bwa_mem_index_builder_data_manager'
 )
 
 declare -A INDEXER_DM_TOOL_IDS
@@ -513,7 +514,7 @@ data_managers:
       - 'reference_source|user_url': '$url'
 EOF
             ;;
-        bowtie1|bowtie2)
+        bowtie1|bowtie2|bwa-mem)
             cat >"${fname}" <<EOF
 data_managers:
   - id: $tool_id
