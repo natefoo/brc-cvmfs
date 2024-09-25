@@ -557,8 +557,6 @@ function import_tool_data_bundles() {
         bundle_uri="$(log_exec ${EPHEMERIS_BIN}/python3 get-bundle-url.py --history-name "brc-${run_id}" --galaxy-api-key="$GALAXY_USER_API_KEY")"
         [ -n "$bundle_uri" ] || log_exit_error "Could not determine bundle URI!"
         log_debug "bundle URI is: $bundle_uri"
-        # FIXME: this currently only works if you manually disable the IP allowlist check in
-        # galaxy-maintenance-scripts/lib/python3.10/site-packages/galaxy/files/uris.py
         log_exec bwrap --bind / / \
             --dev-bind /dev /dev \
             --bind "$OVERLAYFS_MOUNT" "/cvmfs/${REPO}" -- \
@@ -566,6 +564,7 @@ function import_tool_data_bundles() {
                     --tool-data-path "/cvmfs/${REPO}/data" \
                     --data-table-config-path "/cvmfs/${REPO}/config/tool_data_table_conf.xml" \
                     "$bundle_uri"
+        # FIXME: testing
         break
     done
 }
@@ -585,7 +584,7 @@ function show_logs() {
 
 function show_paths() {
     log "contents of OverlayFS upper mount (will be published)"
-    exec_on tree "$OVERLAYFS_UPPER"
+    log_exec tree "$OVERLAYFS_UPPER"
 }
 
 
@@ -594,11 +593,10 @@ function check_for_repo_changes() {
     local changes=false
     log "Checking for changes to repo"
     show_paths
-    for config in $(exec_on "compgen -G '${OVERLAYFS_UPPER}/config/*'"); do
-        exec_on test -f "$config" || continue
+    for config in "${OVERLAYFS_UPPER}/config/"*; do
         lower="${OVERLAYFS_LOWER}/config/${config##*/}"
-        exec_on test -f "$lower" || lower=/dev/null
-        exec_on diff -q "$lower" "$config" || { changes=true; exec_on diff -u "$lower" "$config" || true; }
+        [ -f "$lower" ] || lower=/dev/null
+        diff -q "$lower" "$config" || { changes=true; diff -u "$lower" "$config" || true; }
     done
     if ! $changes; then
         log_exit_error "Terminating build: expected changes to ${OVERLAYFS_UPPER}/config/* not found!"
@@ -611,10 +609,10 @@ function clean_workspace() {
 }
 
 
-function post_install() {
-    log "Running post-installation tasks"
-    exec_on "find '$OVERLAYFS_UPPER' -perm -u+r -not -perm -o+r -not -type l -print0 | xargs -0 --no-run-if-empty chmod go+r"
-    exec_on "find '$OVERLAYFS_UPPER' -perm -u+rx -not -perm -o+rx -not -type l -print0 | xargs -0 --no-run-if-empty chmod go+rx"
+function post_import() {
+    log "Running post-import tasks"
+    log_exec "find '$OVERLAYFS_UPPER' -perm -u+r -not -perm -o+r -not -type l -print0 | xargs -0 --no-run-if-empty chmod go+r"
+    log_exec "find '$OVERLAYFS_UPPER' -perm -u+rx -not -perm -o+rx -not -type l -print0 | xargs -0 --no-run-if-empty chmod go+rx"
 }
 
 
@@ -627,58 +625,8 @@ function copy_upper_to_stratum0() {
 }
 
 
-function do_import_local() {
-    mount_overlay
-    # TODO: we could probably replace the import container with whatever cvmfsexec does to fake a mount
-    if generate_import_tasks; then
-        create_workdir
-        prep_for_galaxy_run
-        update_tool_data_table_conf
-        run_import_container
-        import_tool_data_bundles
-        check_for_repo_changes
-        stop_import_container
-        clean_preconfigured_container
-        post_install
-    else
-        log "Nothing to import"
-        PUBLISH=false
-    fi
-    if $PUBLISH; then
-        start_ssh_control
-        begin_transaction 600
-        copy_upper_to_stratum0
-        publish_transaction
-        stop_ssh_control
-    fi
-    unmount_overlay
-}
-
-
-function do_import_remote() {
-    start_ssh_control
-    create_remote_workdir
-    setup_remote_ephemeris
-    # from this point forward $EPHEMERIS_BIN refers to remote
-    if generate_import_tasks; then
-        setup_galaxy_maintenance_scripts "$WORKDIR" "$REMOTE_PYTHON"
-        begin_transaction
-        update_tool_data_table_conf
-        import_tool_data_bundles
-        check_for_repo_changes
-        post_install
-    else
-        log "Nothing to import"
-        PUBLISH=false
-    fi
-    $PUBLISH && publish_transaction || abort_transaction
-    stop_ssh_control
-}
-
-
 function main() {
     set_repo_vars
-    #verify_cvmfs_revision
     fetch_assembly_list
     mount_overlay
     detect_changes
@@ -693,25 +641,20 @@ function main() {
         update_tool_data_table_conf
         setup_galaxy_maintenance_scripts
         import_tool_data_bundles
+        check_for_repo_changes
+        post_import
     elif [ "${#MISSING_ASSEMBLY_LIST[@]}" -gt 0 ]; then
         echo "NOT IMPLEMENTED"
         exit 1
     fi
-    #if generate_data_manager_tasks; then
-    #    run_build_galaxy
-    #    wait_for_build_galaxy
-    #    #install_data_managers
-    #    run_data_managers
-    #else
-    #    log "Nothing to build, will check for unimported data"
-    #fi
-    #if $USE_LOCAL_OVERLAYFS; then
-    #    do_import_local
-    #else
-    #    do_import_remote
-    #fi
-    #stop_build_galaxy
-    #clean_workspace
+    start_ssh_control
+    begin_transaction 600
+    copy_upper_to_stratum0
+    $PUBLISH && publish_transaction || abort_transaction
+    stop_ssh_control
+    stop_galaxy
+    unmount_overlay
+    clean_workspace
     return 0
 }
 
