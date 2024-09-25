@@ -102,7 +102,7 @@ function trap_handler() {
     $DEVMODE || clean_workspace
     # definitely don't want to do this in devmode, probably not in regular either
     #[ -n "$WORKSPACE" ] && log_exec rm -rf "$WORKSPACE"
-    $SSH_MASTER_UP && [ -n "$REMOTE_WORKDIR" ] && exec_on rm -rf "$REMOTE_WORKDIR"
+    #$SSH_MASTER_UP && [ -n "$REMOTE_WORKDIR" ] && exec_on rm -rf "$REMOTE_WORKDIR"
     $SSH_MASTER_UP && stop_ssh_control
     return 0
 }
@@ -159,16 +159,6 @@ function exec_on() {
 }
 
 
-function copy_to() {
-    local file="$1"
-    if $USE_LOCAL_OVERLAYFS && ! $SSH_MASTER_UP; then
-        log_exec cp "$file" "${WORKDIR}/${file##*}"
-    else
-        log_exec scp -o "ControlPath=$SSH_MASTER_SOCKET" "$file" "${REPO_USER}@${REPO_STRATUM0}:${REMOTE_WORKDIR}/${file##*/}"
-    fi
-}
-
-
 function fetch_assembly_list() {
     local line a
     # prefer refSeq IDs to genBank per Hiram
@@ -195,14 +185,14 @@ function detect_changes() {
         #log_debug "Checking assembly: ${assembly}"
         loc="/cvmfs/${REPO}/config/all_fasta.loc"
         if [ ! -f "$loc" ] || ! grep -Eq "^${dbkey}\s+" "$loc"; then
-            log "Missing assembly: ${dbkey} (dbkey: $asm_id)"
+            log "Missing assembly: ${asm_id} (dbkey: ${dbkey})"
             MISSING_ASSEMBLY_LIST+=("$asm_id")
             #DM_INSTALL_LIST+=("fetch")
         else
             for indexer in "${INDEXER_LIST[@]}"; do
                 loc="/cvmfs/${REPO}/config/${INDEXER_LOC_LIST[$indexer]}"
                 if [ ! -f "$loc" ] || grep -Eq "^${dbkey}\s+" "$loc"; then
-                    log "Missing index: ${asm_id}/${indexer} (dbkey: $dbkey)"
+                    log "Missing index: ${asm_id}/${indexer} (dbkey: ${dbkey})"
                     MISSING_INDEX_LIST+=("${asm_id}/${indexer}")
                     #DM_INSTALL_LIST+=("$indexer")
                 fi
@@ -311,10 +301,6 @@ function unmount_overlay() {
         log_exec fusermount -u "$OVERLAYFS_MOUNT"
         LOCAL_OVERLAYFS_MOUNTED=false
     fi
-    # DEBUG: what is holding this?
-    log_exec fuser -v "$OVERLAYFS_LOWER" || true
-    # Attempt to kill anything still accessing lower so unmount doesn't fail
-    log_exec fuser -v -k "$OVERLAYFS_LOWER" || true
     log_exec fusermount -u "$OVERLAYFS_LOWER"
     LOCAL_CVMFS_MOUNTED=false
 }
@@ -363,15 +349,22 @@ function begin_transaction() {
 
 
 function abort_transaction() {
+    local tag="${1:-}"
+    local message="${2:-}"
     log "Aborting transaction on $REPO"
+    if [ -n "$message" ]; then
+        log "Publish would have been tag: ${tag}, message: ${message}"
+    fi
     exec_on cvmfs_server abort -f "$REPO"
     CVMFS_TRANSACTION_UP=false
 }
 
 
 function publish_transaction() {
+    local tag="$1"
+    local message="$2"
     log "Publishing transaction on $REPO"
-    exec_on "cvmfs_server publish -a 'idc-${GIT_COMMIT:0:7}.${DM_STAGE}' -m 'Automated data installation for commit ${GIT_COMMIT}' ${REPO}"
+    exec_on "cvmfs_server publish -a '${tag}' -m '${message}' ${REPO}"
     CVMFS_TRANSACTION_UP=false
 }
 
@@ -583,8 +576,8 @@ function clean_workspace() {
 
 function post_import() {
     log "Running post-import tasks"
-    log_exec "find '$OVERLAYFS_UPPER' -perm -u+r -not -perm -o+r -not -type l -print0 | xargs -0 --no-run-if-empty chmod go+r"
-    log_exec "find '$OVERLAYFS_UPPER' -perm -u+rx -not -perm -o+rx -not -type l -print0 | xargs -0 --no-run-if-empty chmod go+rx"
+    log_exec find "$OVERLAYFS_UPPER" -perm -u+r -not -perm -o+r -not -type l -print0 | xargs -0 --no-run-if-empty chmod go+r
+    log_exec find "$OVERLAYFS_UPPER" -perm -u+rx -not -perm -o+rx -not -type l -print0 | xargs -0 --no-run-if-empty chmod go+rx
 }
 
 
@@ -598,12 +591,13 @@ function copy_upper_to_stratum0() {
 
 
 function main() {
+    local message
     set_repo_vars
     fetch_assembly_list
     mount_overlay
     detect_changes
-    generate_data_manager_tasks
-    if [ "${#MISSING_ASSEMBLY_LIST[@]}" -gt 0 ]; then
+    if [ "${#MISSING_ASSEMBLY_LIST[@]}" -gt 0 ] || [ "${#MISSING_INDEX_LIST[@]}" -gt 0 ]; then
+        generate_data_manager_tasks
         setup_ephemeris
         setup_galaxy
         run_galaxy
@@ -611,25 +605,34 @@ function main() {
         install_data_managers
         setup_galaxy_maintenance_scripts
         update_tool_data_table_conf
-        for asm_id in "${MISSING_ASSEMBLY_LIST[@]}"; do
-            run_data_manager 'fetch' "$asm_id"
-            import_tool_data_bundle 'fetch' "$asm_id"
-            check_for_repo_changes
-            post_import
-            clean_overlay
-        done
-    elif [ "${#MISSING_INDEX_LIST[@]}" -gt 0 ]; then
-        echo "NOT IMPLEMENTED"
-        exit 1
+        start_ssh_control
+        if [ "${#MISSING_ASSEMBLY_LIST[@]}" -gt 0 ]; then
+            for asm_id in "${MISSING_ASSEMBLY_LIST[@]}"; do
+                run_data_manager 'fetch' "$asm_id"
+                import_tool_data_bundle 'fetch' "$asm_id"
+                check_for_repo_changes
+                post_import
+                begin_transaction 600
+                copy_upper_to_stratum0
+                message="Sequence and dbkey for assembly: ${asm_id}"
+                if $PUBLISH; then
+                    publish_transaction "brc-fetch-${asm_id}" "$message"
+                else
+                    abort_transaction "brc-fetch-${asm_id}" "$message"
+                fi
+                clean_overlay
+            done
+        elif [ "${#MISSING_INDEX_LIST[@]}" -gt 0 ]; then
+            echo "NOT IMPLEMENTED"
+            exit 1
+        fi
+        stop_ssh_control
+        stop_galaxy
+    else
+        log "No changes!"
     fi
-    start_ssh_control
-    begin_transaction 600
-    copy_upper_to_stratum0
-    $PUBLISH && publish_transaction || abort_transaction
-    stop_ssh_control
-    stop_galaxy
     unmount_overlay
-    clean_workspace
+    $DEVMODE || clean_workspace
     return 0
 }
 
