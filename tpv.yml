@@ -41,3 +41,7 @@ tools:
     scheduling:
       require:
         - singularity
+  .*/rna_star_index_builder_data_manager/.*:
+    scheduling:
+      require:
+        - singularity

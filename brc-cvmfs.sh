@@ -24,9 +24,9 @@ INDEXER_LIST=(
     bowtie1
     bowtie2
     bwa-mem
+    star
 )
 #    bwa-mem2
-#    star
 #    hisat2
 #    snpeff
 #)
@@ -37,6 +37,7 @@ declare -rA INDEXER_LOC_LIST=(
     ['bowtie2']='bowtie2_indices.loc'
     ['bwa-mem']='bwa_mem_index.loc'
     ['bwa-mem2']='bwa_mem2_index.loc'
+    ['star']='rnastar_index2x_versioned.loc'
 )
 
 declare -rA INDEXER_DM_LIST=(
@@ -44,6 +45,7 @@ declare -rA INDEXER_DM_LIST=(
     ['bowtie1']='iuc/data_manager_bowtie_index_builder/bowtie_index_builder_data_manager'
     ['bowtie2']='devteam/data_manager_bowtie2_index_builder/bowtie2_index_builder_data_manager'
     ['bwa-mem']='devteam/data_manager_bwa_mem_index_builder/bwa_mem_index_builder_data_manager'
+    ['star']='iuc/data_manager_star_index_builder/rna_star_index_builder_data_manager'
 )
 
 declare -A INDEXER_DM_TOOL_IDS
@@ -514,16 +516,13 @@ data_managers:
       - 'reference_source|user_url': '$url'
 EOF
             ;;
-        bowtie1|bowtie2|bwa-mem)
+        *)
             cat >"${fname}" <<EOF
 data_managers:
   - id: $tool_id
     params:
       - 'all_fasta_source': '$dbkey'
 EOF
-            ;;
-        *)
-            log_exit_error "No DM config for DM: $dm"
             ;;
     esac
 }
