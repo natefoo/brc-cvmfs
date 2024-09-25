@@ -16,26 +16,36 @@ WORKDIR="${WORKSPACE}/${BUILD_NUMBER}"
 # for cvmfs-fuse.conf
 export WORKDIR
 
-ASSEMBLY_LIST_URL='https://hgdownload.soe.ucsc.edu/hubs/BRC/assemblyList.json'
+HGDOWNLOAD='hgdownload2.soe.ucsc.edu'
+ASSEMBLY_LIST_URL="https://${HGDOWNLOAD}/hubs/BRC/assemblyList.json"
 
+# could use the dict keys but this stays sorted
 INDEXER_LIST=(
     bowtie1
     bowtie2
-    bwa-mem
-    bwa-mem2
 )
+#    bwa-mem
+#    bwa-mem2
+#    star
+#    hisat2
+#    snpeff
+#)
 # 2bit???
 
 declare -rA INDEXER_LOC_LIST=(
-    ["bowtie1"]="bowtie_indices.loc"
-    ["bowtie2"]="bowtie2_indices.loc"
-    ["bwa-mem"]="bwa_mem_index.loc"
-    ["bwa-mem2"]="bwa_mem2_index.loc"
+    ['bowtie1']='bowtie_indices.loc'
+    ['bowtie2']='bowtie2_indices.loc'
+    ['bwa-mem']='bwa_mem_index.loc'
+    ['bwa-mem2']='bwa_mem2_index.loc'
 )
 
 declare -rA INDEXER_DM_LIST=(
-    ["fetch"]="devteam/data_manager_fetch_genome_dbkeys_all_fasta"
+    ['fetch']='devteam/data_manager_fetch_genome_dbkeys_all_fasta/data_manager_fetch_genome_all_fasta_dbkey'
+    ['bowtie1']='iuc/data_manager_bowtie_index_builder/bowtie_index_builder_data_manager'
+    ['bowtie2']='devteam/data_manager_bowtie2_index_builder/bowtie2_index_builder_data_manager'
 )
+
+declare -A INDEXER_DM_TOOL_IDS
 
 DM_CONFIGS="${WORKDIR}/dm_configs"
 
@@ -93,8 +103,6 @@ function trap_handler() {
     { set +x; } 2>/dev/null
     # return to original dir
     while popd 2>/dev/null; do :; done || true
-    #$IMPORT_CONTAINER_UP && stop_import_container
-    #clean_preconfigured_container
     $GALAXY_UP && stop_galaxy
     $LOCAL_CVMFS_MOUNTED && unmount_overlay
     # $LOCAL_OVERLAYFS_MOUNTED does not need to be checked here since if it's true, $LOCAL_CVMFS_MOUNTED must be true
@@ -287,11 +295,14 @@ function mount_overlay() {
 
 
 function clean_overlay() {
-    log "Remounting OverlayFS/CVMFS for cleaning"
-    unmount_overlay
-    log "Cleaning OverlayFS"
-    log_exec rm -rf "$OVERLAYFS_LOWER" "$OVERLAYFS_UPPER" "$OVERLAYFS_WORK" "$OVERLAYFS_MOUNT" "$CVMFS_CACHE"
-    mount_overlay
+    # now that Galaxy uses this, CVMFS doesn't unmount cleanly, so we will try the sledgehammer instead
+    #log "Remounting OverlayFS/CVMFS for cleaning"
+    #unmount_overlay
+    log "Cleaning OverlayFS upper"
+    #log_exec rm -rf "$OVERLAYFS_LOWER" "$OVERLAYFS_UPPER" "$OVERLAYFS_WORK" "$OVERLAYFS_MOUNT" "$CVMFS_CACHE"
+    log_exec rm -rf "$OVERLAYFS_UPPER"/{config,data}
+    #mount_overlay
+    verify_cvmfs_revision
 }
 
 
@@ -383,6 +394,7 @@ function setup_galaxy() {
         log_exec git clone -b "$GALAXY_CLONE_BRANCH" --depth=1 "$GALAXY_CLONE_URL" "$galaxy"
     fi
     log_exec cp galaxy.yml "${galaxy}/config/galaxy.yml"
+    log_exec cp tpv.yml "${galaxy}/config/tpv.yml"
     if [ ! -d "${galaxy}/.venv" ] || ! $DEVMODE; then
         pushd "$galaxy"
         log_exec sh ./scripts/common_startup.sh --skip-client-build
@@ -396,7 +408,10 @@ function run_galaxy() {
     log "Starting Galaxy"
     pushd "$galaxy"
     . ./.venv/bin/activate
-    log_exec ./.venv/bin/galaxyctl start
+    log_exec bwrap --bind / / \
+        --dev-bind /dev /dev \
+        --ro-bind "$OVERLAYFS_MOUNT" "/cvmfs/${REPO}" -- \
+            ./.venv/bin/galaxyctl start
     deactivate
     GALAXY_UP=true
     popd
@@ -434,48 +449,82 @@ function stop_galaxy() {
 
 
 function install_data_managers() {
-    local dm_install_list dm a
+    local dm_install_list dm dm_repo a dm_version_url dm_version dm_tool
     log "Generating Data Manager tool list"
     #log_exec _idc-data-managers-to-tools
     #IFS=$'\n'; dm_install_list=($(sort <<<"${DM_INSTALL_LIST[*]}" | uniq)); unset IFS
     log "Installing Data Managers"
     . "${EPHEMERIS_BIN}/activate"
     #for dm in "${dm_install_list[@]}"; do
-    for dm_repo in "${INDEXER_DM_LIST[@]}"; do
-        #dm_repo="${INDEXER_DM_LIST[$dm]}"
-        readarray -td/ a <<<"$dm_repo"
+    for dm in "${!INDEXER_DM_LIST[@]}"; do
+        dm_repo="${INDEXER_DM_LIST[$dm]}"
+        readarray -td/ a < <(echo -n "$dm_repo")
         log_exec shed-tools install -g "$GALAXY_URL" -a "$GALAXY_ADMIN_API_KEY" \
             --skip_install_resolver_dependencies \
             --skip_install_repository_dependencies \
             --owner "${a[0]}" \
             --name "${a[1]}"
+        dm_version_url="${GALAXY_URL}/api/tools?key=${GALAXY_ADMIN_API_KEY}&tool_id=${a[2]}"
+        # this breaks on e.g. +galaxy versions, hopefully they are already sorted (and there should be only one anyway)
+        #dm_version=$(curl "$dm_version_url" | jq -r 'sort_by(split(".") | map(tonumber))[-1]')
+        dm_version=$(curl "$dm_version_url" | jq -r '.[-1]')
+        dm_tool="toolshed.g2.bx.psu.edu/repos/${dm_repo}/${dm_version}"
+        log "DM tool for '${dm}' is: ${dm_tool}"
+        INDEXER_DM_TOOL_IDS[$dm]="$dm_tool"
     done
     deactivate
 }
 
 
 function generate_data_manager_tasks() {
-    local asm_id dbkey name url
+    local asm_id dbkey name url tool_id dm
     #local assembly_list_file="$(basename "$ASSEMBLY_LIST_URL")"
     log "Generating Data Manager tasks"
     mkdir -p "$DM_CONFIGS"
     for asm_id in "${MISSING_ASSEMBLY_LIST[@]}"; do
-        # FIXME: hardcoded DM tool id
-        dbkey=${ASSEMBLY_LIST[$asm_id]}
-        name=${ASSEMBLY_NAMES[$asm_id]}
-        url="$(ucsc_fasta_url "$asm_id" "$dbkey")"
-        cat >"${DM_CONFIGS}/fetch-${asm_id}.yaml" <<EOF
+        generate_dm_task 'fetch' "$asm_id"
+        for indexer in "${INDEXER_LIST[@]}"; do
+            generate_dm_task "$indexer" "$asm_id"
+        done
+    done
+}
+
+
+function generate_dm_task() {
+    local dm="$1"
+    local asm_id="$2"
+    local dbkey=${ASSEMBLY_LIST[$asm_id]}
+    local tool_id=${INDEXER_DM_TOOL_IDS[$dm]}
+    local fname="${DM_CONFIGS}/${dm}-${asm_id}.yaml"
+    log "Writing ${fname}"
+    case "$dm" in
+        fetch)
+            local name=${ASSEMBLY_NAMES[$asm_id]}
+            local url="$(ucsc_fasta_url "$asm_id" "$dbkey")"
+            cat >"${fname}" <<EOF
 data_managers:
-  - id: toolshed.g2.bx.psu.edu/repos/devteam/data_manager_fetch_genome_dbkeys_all_fasta/data_manager_fetch_genome_all_fasta_dbkey/0.0.4
+  - id: $tool_id
     params:
       - 'dbkey_source|dbkey_source_selector': 'new'
       - 'dbkey_source|dbkey': '$dbkey'
-      - 'dbkey_source|dbkey_name': 'BRC: $name'
+      - 'dbkey_source|dbkey_name': '$name'
       - 'sequence_name': '$name'
       - 'reference_source|reference_source_selector': 'url'
       - 'reference_source|user_url': '$url'
 EOF
-    done
+            ;;
+        bowtie1|bowtie2)
+            cat >"${fname}" <<EOF
+data_managers:
+  - id: $tool_id
+    params:
+      - 'all_fasta_source': '$dbkey'
+EOF
+            ;;
+        *)
+            log_exit_error "No DM config for DM: $dm"
+            ;;
+    esac
 }
 
 
@@ -484,10 +533,10 @@ function ucsc_fasta_url() {
     local dbkey="$2"
     case "$asm_id" in
         GC?_*)
-            echo "https://hgdownload.soe.ucsc.edu/hubs/${dbkey:0:3}/${dbkey:4:3}/${dbkey:7:3}/${dbkey:10:3}/${dbkey}/${dbkey}.fa.gz"
+            echo "https://${HGDOWNLOAD}/hubs/${dbkey:0:3}/${dbkey:4:3}/${dbkey:7:3}/${dbkey:10:3}/${dbkey}/${dbkey}.fa.gz"
             ;;
         *)
-            echo "https://hgdownload.soe.ucsc.edu/goldenPath/${asm_id}/bigZips/${asm_id}.fa.gz"
+            echo "https://${HGDOWNLOAD}/goldenPath/${asm_id}/bigZips/${asm_id}.fa.gz"
             ;;
     esac
 }
@@ -532,6 +581,15 @@ function import_tool_data_bundle() {
                 --tool-data-path "/cvmfs/${REPO}/data" \
                 --data-table-config-path "/cvmfs/${REPO}/config/tool_data_table_conf.xml" \
                 "$bundle_uri"
+}
+
+
+function reload_data_tables() {
+    for data_table in "$@"; do
+        log "Reloading ${data_table}"
+        log_exec curl "${GALAXY_URL}/api/tool_data/${data_table}/reload?key=${GALAXY_ADMIN_API_KEY}"
+        echo ''
+    done
 }
 
 
@@ -597,12 +655,12 @@ function main() {
     mount_overlay
     detect_changes
     if [ "${#MISSING_ASSEMBLY_LIST[@]}" -gt 0 ] || [ "${#MISSING_INDEX_LIST[@]}" -gt 0 ]; then
-        generate_data_manager_tasks
         setup_ephemeris
         setup_galaxy
         run_galaxy
         create_brc_user
         install_data_managers
+        generate_data_manager_tasks
         setup_galaxy_maintenance_scripts
         update_tool_data_table_conf
         start_ssh_control
@@ -610,15 +668,20 @@ function main() {
             for asm_id in "${MISSING_ASSEMBLY_LIST[@]}"; do
                 run_data_manager 'fetch' "$asm_id"
                 import_tool_data_bundle 'fetch' "$asm_id"
+                reload_data_tables 'all_fasta' '__dbkeys__'
+                for indexer in "${INDEXER_LIST[@]}"; do
+                    run_data_manager "$indexer" "$asm_id"
+                    import_tool_data_bundle "$indexer" "$asm_id"
+                done
                 check_for_repo_changes
                 post_import
                 begin_transaction 600
                 copy_upper_to_stratum0
-                message="Sequence and dbkey for assembly: ${asm_id}"
+                message="Initial sequence and indexes for assembly: ${asm_id}"
                 if $PUBLISH; then
-                    publish_transaction "brc-fetch-${asm_id}" "$message"
+                    publish_transaction "brc-initial-${asm_id}" "$message"
                 else
-                    abort_transaction "brc-fetch-${asm_id}" "$message"
+                    abort_transaction "brc-initial-${asm_id}" "$message"
                 fi
                 clean_overlay
             done

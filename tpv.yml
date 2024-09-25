@@ -1,0 +1,39 @@
+---
+
+global:
+  default_inherits: _default
+
+destinations:
+  default:
+    runner: local
+    scheduling:
+      reject:
+        - singularity
+  apptainer:
+    runner: local
+    params:
+      singularity_enabled: true
+      singularity_volumes: "$defaults,/cvmfs/sandbox.galaxyproject.org"
+      require_container: true
+    scheduling:
+      require:
+        - singularity
+
+tools:
+  _default:
+    abstract: true
+    cores: 1
+    mem: 4
+  .*/bowtie_index_builder_data_manager/.*:
+    params:
+      container_override:
+      - type: singularity
+        shell: /bin/sh
+        identifier: /cvmfs/singularity.galaxyproject.org/all/bowtie:1.2.0--py36_0
+    scheduling:
+      require:
+        - singularity
+  .*/bowtie2_index_builder_data_manager/.*:
+    scheduling:
+      require:
+        - singularity

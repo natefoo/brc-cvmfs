@@ -1,11 +1,9 @@
 ---
 
 gravity:
-  #virtualenv: /home/nate/brc/none/.venv
   gunicorn:
     bind: '127.0.0.1:8080'
   celery:
-    # FIXME: might need it actually, w/ results backend, meh
     enable: false
     enable_beat: false
 
@@ -13,3 +11,24 @@ galaxy:
   admin_users: brc@galaxyproject.org
   bootstrap_admin_api_key: c0ffee
   conda_auto_init: false
+  tool_data_table_config_path: /cvmfs/sandbox.galaxyproject.org/config/tool_data_table_conf.xml
+  container_resolvers:
+    - cache_directory: /cvmfs/singularity.galaxyproject.org/all
+      cache_directory_cacher_type: dir_mtime
+      type: cached_mulled_singularity
+  cleanup_job: never
+  job_config:
+    runners:
+      local:
+        load: galaxy.jobs.runners.local:LocalJobRunner
+        workers: 1
+    execution:
+      default: tpv_dispatcher
+      environments:
+        tpv_dispatcher:
+          runner: dynamic
+          type: python
+          function: map_tool_to_destination
+          rules_module: tpv.rules
+          tpv_config_files:
+            - config/tpv.yml
