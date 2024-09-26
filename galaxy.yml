@@ -11,6 +11,11 @@ galaxy:
   admin_users: brc@galaxyproject.org
   bootstrap_admin_api_key: c0ffee
   conda_auto_init: false
+  file_path: SHARED_ROOT/objects
+  job_working_directory: SHARED_ROOT/jobs
+  # not implemented as configurable, so we copy an empty shed_tool_conf.xml instead
+  #shed_tools_dir: SHARED_ROOT/tools
+  tool_data_path: SHARED_ROOT/tool-data
   tool_data_table_config_path: /cvmfs/sandbox.galaxyproject.org/config/tool_data_table_conf.xml
   container_resolvers:
     - cache_directory: /cvmfs/singularity.galaxyproject.org/all
@@ -22,6 +27,9 @@ galaxy:
       local:
         load: galaxy.jobs.runners.local:LocalJobRunner
         workers: 1
+      slurm:
+        load: galaxy.jobs.runners.slurm:SlurmJobRunner
+        drmaa_library_path: /usr/lib64/libdrmaa.so.1
     execution:
       default: tpv_dispatcher
       environments:

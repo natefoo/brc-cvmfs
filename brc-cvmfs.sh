@@ -3,13 +3,14 @@ set -euo pipefail
 
 # Set this variable to 'true' to publish on successful installation
 : ${PUBLISH:=false}
-: ${DEVMODE:=false}
+: ${DEVMODE:=true}
 : ${DEBUG:=$DEVMODE}
+: ${SHARED_ROOT:='/jetstream2/scratch/idc/brc'}
+
 
 # Set by Jenkins if we're running in Jenkins
 #: ${WORKSPACE:="$(mktemp -d -t brc.work.XXXXXX)"}
 : ${WORKSPACE:="$(pwd)"}
-: ${JOB_NAME:='none'}
 : ${BUILD_NUMBER:='none'}
 
 WORKDIR="${WORKSPACE}/${BUILD_NUMBER}"
@@ -73,7 +74,8 @@ GALAXY_USER_API_KEY=
 EPHEMERIS="git+https://github.com/mvdbeek/ephemeris.git@dm_parameters#egg_name=ephemeris"
 GALAXY_MAINTENANCE_SCRIPTS="git+https://github.com/mvdbeek/galaxy-maintenance-scripts.git@avoid_galaxy_app#egg_name=galaxy-maintenance-scripts"
 
-SSH_MASTER_SOCKET_DIR="${HOME}/.cache/brc"
+#SSH_MASTER_SOCKET_DIR="${HOME}/.cache/brc"
+SSH_MASTER_SOCKET_DIR="$(pwd)"
 
 # Should be set by Jenkins, so the default here is for development
 : ${GIT_COMMIT:=$(git rev-parse HEAD)}
@@ -88,6 +90,7 @@ USE_LOCAL_OVERLAYFS=true
 #
 
 SSH_MASTER_SOCKET=
+SSH_MASTER_SOCKET_CREATED=false
 OVERLAYFS_UPPER=
 OVERLAYFS_LOWER=
 OVERLAYFS_WORK=
@@ -323,17 +326,25 @@ function unmount_overlay() {
 function start_ssh_control() {
     log "Starting SSH control connection to Stratum 0"
     SSH_MASTER_SOCKET="${SSH_MASTER_SOCKET_DIR}/ssh-tunnel-${REPO_USER}-${REPO_STRATUM0}.sock"
-    log_exec mkdir -p "$SSH_MASTER_SOCKET_DIR"
-    log_exec ssh -M -S "$SSH_MASTER_SOCKET" -Nfn -l "$REPO_USER" "$REPO_STRATUM0"
+    #log_exec mkdir -p "$SSH_MASTER_SOCKET_DIR"
+    if [ -S "$SSH_MASTER_SOCKET" ]; then
+        log "Testing existing SSH control connection at: $SSH_MASTER_SOCKET"
+        ssh -S "$SSH_MASTER_SOCKET" -l "$REPO_USER" "$REPO_STRATUM0" -- /bin/true
+    else
+        log_exec ssh -M -S "$SSH_MASTER_SOCKET" -Nfn -l "$REPO_USER" "$REPO_STRATUM0"
+    fi
     SSH_MASTER_UP=true
 }
 
 
 function stop_ssh_control() {
     log "Stopping SSH control connection to Stratum 0"
-    log_exec ssh -S "$SSH_MASTER_SOCKET" -O exit -l "$REPO_USER" "$REPO_STRATUM0"
-    rm -f "$SSH_MASTER_SOCKET"
+    if $SSH_MASTER_SOCKET_CREATED; then
+        log_exec ssh -S "$SSH_MASTER_SOCKET" -O exit -l "$REPO_USER" "$REPO_STRATUM0"
+        rm -f "$SSH_MASTER_SOCKET"
+    fi
     SSH_MASTER_UP=false
+
 }
 
 
@@ -396,8 +407,11 @@ function setup_galaxy() {
     if [ ! -d "$galaxy" ] || ! $DEVMODE; then
         log_exec git clone -b "$GALAXY_CLONE_BRANCH" --depth=1 "$GALAXY_CLONE_URL" "$galaxy"
     fi
-    log_exec cp galaxy.yml "${galaxy}/config/galaxy.yml"
-    log_exec cp tpv.yml "${galaxy}/config/tpv.yml"
+    if [ ! -f "{galaxy}/config/shed_tool_conf.xml" ]; then
+        log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" shed_tool_conf.xml > "${galaxy}/config/shed_tool_conf.xml"
+    fi
+    log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" galaxy.yml > "${galaxy}/config/galaxy.yml"
+    log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" tpv.yml > "${galaxy}/config/tpv.yml"
     if [ ! -d "${galaxy}/.venv" ] || ! $DEVMODE; then
         pushd "$galaxy"
         log_exec sh ./scripts/common_startup.sh --skip-client-build
@@ -593,6 +607,12 @@ function reload_data_tables() {
 }
 
 
+# this ia a dirty hack necessary for the cluster-based indexers to access the staged but unpublished references
+function copy_upper_to_shared() {
+    log_exec rsync -av --delete "${OVERLAYFS_UPPER}/" "${SHARED_ROOT}/upper"
+}
+
+
 function show_logs() {
     local lines=
     if [ -n "${1:-}" ]; then
@@ -669,6 +689,7 @@ function main() {
                 run_data_manager 'fetch' "$asm_id"
                 import_tool_data_bundle 'fetch' "$asm_id"
                 reload_data_tables 'all_fasta' '__dbkeys__'
+                copy_upper_to_shared
                 for indexer in "${INDEXER_LIST[@]}"; do
                     run_data_manager "$indexer" "$asm_id"
                     import_tool_data_bundle "$indexer" "$asm_id"
