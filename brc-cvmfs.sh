@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Set this variable to 'true' to publish on successful installation
 : ${PUBLISH:=false}
-: ${DEVMODE:=true}
+: ${DEVMODE:=false}
 : ${DEBUG:=$DEVMODE}
 : ${SHARED_ROOT:='/jetstream2/scratch/idc/brc'}
 
@@ -11,7 +11,7 @@ set -euo pipefail
 # Set by Jenkins if we're running in Jenkins
 #: ${WORKSPACE:="$(mktemp -d -t brc.work.XXXXXX)"}
 : ${WORKSPACE:="$(pwd)"}
-: ${BUILD_NUMBER:='none'}
+: ${BUILD_NUMBER:='work'}
 
 WORKDIR="${WORKSPACE}/${BUILD_NUMBER}"
 # for cvmfs-fuse.conf
@@ -25,13 +25,12 @@ INDEXER_LIST=(
     bowtie1
     bowtie2
     bwa-mem
+    bwa-mem2
     star
+    hisat2
 )
-#    bwa-mem2
-#    hisat2
+# Need annotations
 #    snpeff
-#)
-# 2bit???
 
 declare -rA INDEXER_LOC_LIST=(
     ['bowtie1']='bowtie_indices.loc'
@@ -39,17 +38,20 @@ declare -rA INDEXER_LOC_LIST=(
     ['bwa-mem']='bwa_mem_index.loc'
     ['bwa-mem2']='bwa_mem2_index.loc'
     ['star']='rnastar_index2x_versioned.loc'
+    ['hisat2']='hisat2_indexes.loc'
 )
 
-declare -rA INDEXER_DM_LIST=(
+declare -rA DM_LIST=(
     ['fetch']='devteam/data_manager_fetch_genome_dbkeys_all_fasta/data_manager_fetch_genome_all_fasta_dbkey'
     ['bowtie1']='iuc/data_manager_bowtie_index_builder/bowtie_index_builder_data_manager'
     ['bowtie2']='devteam/data_manager_bowtie2_index_builder/bowtie2_index_builder_data_manager'
     ['bwa-mem']='devteam/data_manager_bwa_mem_index_builder/bwa_mem_index_builder_data_manager'
+    ['bwa-mem2']='iuc/data_manager_bwa_mem2_index_builder/bwa_mem2_index_builder_data_manager'
     ['star']='iuc/data_manager_star_index_builder/rna_star_index_builder_data_manager'
+    ['hisat2']='iuc/data_manager_hisat2_index_builder/hisat2_index_builder_data_manager'
 )
 
-declare -A INDEXER_DM_TOOL_IDS
+declare -A DM_TOOL_IDS
 
 DM_CONFIGS="${WORKDIR}/dm_configs"
 
@@ -110,10 +112,10 @@ function trap_handler() {
     # return to original dir
     while popd 2>/dev/null; do :; done || true
     $GALAXY_UP && stop_galaxy
-    $LOCAL_CVMFS_MOUNTED && unmount_overlay
+    $LOCAL_CVMFS_MOUNTED && unmount_overlay_cvmfs
     # $LOCAL_OVERLAYFS_MOUNTED does not need to be checked here since if it's true, $LOCAL_CVMFS_MOUNTED must be true
     $CVMFS_TRANSACTION_UP && abort_transaction
-    $DEVMODE || clean_workspace
+    #$DEVMODE || clean_workspace
     # definitely don't want to do this in devmode, probably not in regular either
     #[ -n "$WORKSPACE" ] && log_exec rm -rf "$WORKSPACE"
     #$SSH_MASTER_UP && [ -n "$REMOTE_WORKDIR" ] && exec_on rm -rf "$REMOTE_WORKDIR"
@@ -196,6 +198,12 @@ function detect_changes() {
     local loc
     for asm_id in "${!ASSEMBLY_LIST[@]}"; do
         dbkey="${ASSEMBLY_LIST[$asm_id]}"
+        case "$dbkey" in
+            hg38|mm39)
+                log "Skipping: ${asm_id} (dbkey: ${dbkey})"
+                continue
+                ;;
+        esac
         #log_debug "Checking assembly: ${assembly}"
         loc="/cvmfs/${REPO}/config/all_fasta.loc"
         if [ ! -f "$loc" ] || ! grep -Eq "^${dbkey}\s+" "$loc"; then
@@ -235,7 +243,7 @@ function set_repo_vars() {
 function setup_ephemeris() {
     # Sets global $EPHEMERIS_BIN
     EPHEMERIS_BIN="${WORKDIR}/ephemeris/bin"
-    if [ ! -d "$EPHEMERIS_BIN" ] || ! $DEVMODE; then
+    if [ ! -d "$EPHEMERIS_BIN" ]; then
         log "Setting up Ephemeris"
         log_exec python3 -m venv "$(dirname "$EPHEMERIS_BIN")"
         log_exec "${EPHEMERIS_BIN}/pip" install --upgrade pip wheel
@@ -248,7 +256,7 @@ function setup_ephemeris() {
 function setup_galaxy_maintenance_scripts() {
     # Sets global $GALAXY_MAINTENANCE_SCRIPTS
     GALAXY_MAINTENANCE_SCRIPTS_BIN="${WORKDIR}/galaxy-maintenance-scripts/bin"
-    if [ ! -d "$GALAXY_MAINTENANCE_SCRIPTS_BIN" ] || ! $DEVMODE; then
+    if [ ! -d "$GALAXY_MAINTENANCE_SCRIPTS_BIN" ]; then
         log "Setting up Galaxy Maintenance Scripts"
         log_exec python3 -m venv "$(dirname "$GALAXY_MAINTENANCE_SCRIPTS_BIN")"
         log_exec "${GALAXY_MAINTENANCE_SCRIPTS_BIN}/pip" install --upgrade pip wheel
@@ -283,13 +291,32 @@ function verify_cvmfs_revision() {
 }
 
 
-function mount_overlay() {
-    log "Mounting OverlayFS/CVMFS"
-    log_exec mkdir -p "$OVERLAYFS_LOWER" "$OVERLAYFS_UPPER" "$OVERLAYFS_WORK" "$OVERLAYFS_MOUNT" "$CVMFS_CACHE"
+function mount_overlay_cvmfs() {
+    mount_cvmfs
+    mount_overlay
+}
+
+
+function unmount_overlay_cvmfs() {
+    unmount_overlay
+    unmount_cvmfs
+}
+
+
+function mount_cvmfs() {
+    log "Mounting CVMFS"
+    log_exec mkdir -p "$OVERLAYFS_LOWER" "$CVMFS_CACHE"
     #log_exec cvmfs2 -o config=cvmfs-fuse.conf,allow_root "$REPO" "$OVERLAYFS_LOWER"
     log_exec cvmfs2 -o config=cvmfs-fuse.conf "$REPO" "$OVERLAYFS_LOWER"
     LOCAL_CVMFS_MOUNTED=true
     verify_cvmfs_revision
+}
+
+
+function mount_overlay() {
+    log "Mounting OverlayFS"
+    log_exec rm -rf "$OVERLAYFS_UPPER" "$OVERLAYFS_WORK" "$OVERLAYFS_MOUNT"
+    log_exec mkdir -p "$OVERLAYFS_UPPER" "$OVERLAYFS_WORK" "$OVERLAYFS_MOUNT"
     #log_exec fuse-overlayfs \
     #    -o "lowerdir=${OVERLAYFS_LOWER},upperdir=${OVERLAYFS_UPPER},workdir=${OVERLAYFS_WORK},allow_root" \
     #    "$OVERLAYFS_MOUNT"
@@ -304,20 +331,26 @@ function clean_overlay() {
     # now that Galaxy uses this, CVMFS doesn't unmount cleanly, so we will try the sledgehammer instead
     #log "Remounting OverlayFS/CVMFS for cleaning"
     #unmount_overlay
-    log "Cleaning OverlayFS upper"
-    #log_exec rm -rf "$OVERLAYFS_LOWER" "$OVERLAYFS_UPPER" "$OVERLAYFS_WORK" "$OVERLAYFS_MOUNT" "$CVMFS_CACHE"
-    log_exec rm -rf "$OVERLAYFS_UPPER"/{config,data}
-    #mount_overlay
+    stop_galaxy
+    unmount_overlay
+    log "Remounting OverlayFS for clean"
+    mount_overlay
     verify_cvmfs_revision
+    run_galaxy
 }
 
 
 function unmount_overlay() {
-    log "Unmounting OverlayFS/CVMFS"
+    log "Unmounting OverlayFS"
     if $LOCAL_OVERLAYFS_MOUNTED; then
         log_exec fusermount -u "$OVERLAYFS_MOUNT"
         LOCAL_OVERLAYFS_MOUNTED=false
     fi
+}
+
+
+function unmount_cvmfs() {
+    log "Unmounting CVMFS"
     log_exec fusermount -u "$OVERLAYFS_LOWER"
     LOCAL_CVMFS_MOUNTED=false
 }
@@ -329,7 +362,7 @@ function start_ssh_control() {
     #log_exec mkdir -p "$SSH_MASTER_SOCKET_DIR"
     if [ -S "$SSH_MASTER_SOCKET" ]; then
         log "Testing existing SSH control connection at: $SSH_MASTER_SOCKET"
-        ssh -S "$SSH_MASTER_SOCKET" -l "$REPO_USER" "$REPO_STRATUM0" -- /bin/true
+        log_exec ssh -S "$SSH_MASTER_SOCKET" -l "$REPO_USER" "$REPO_STRATUM0" -- /bin/true
     else
         log_exec ssh -M -S "$SSH_MASTER_SOCKET" -Nfn -l "$REPO_USER" "$REPO_STRATUM0"
     fi
@@ -404,15 +437,24 @@ function create_workdir() {
 function setup_galaxy() {
     local galaxy="${WORKDIR}/galaxy"
     log "Setting up Galaxy"
+    if [ -d "$SHARED_ROOT" ] && ! $DEVMODE; then
+        rm -rf "$SHARED_ROOT"
+    fi
+    mkdir -p "$SHARED_ROOT"
     if [ ! -d "$galaxy" ] || ! $DEVMODE; then
         log_exec git clone -b "$GALAXY_CLONE_BRANCH" --depth=1 "$GALAXY_CLONE_URL" "$galaxy"
     fi
-    if [ ! -f "{galaxy}/config/shed_tool_conf.xml" ]; then
+    if ! $DEVMODE; then
+        rm -f "${galaxy}/config/shed_tool_conf.xml" \
+              "${galaxy}/database/universe.sqlite" \
+              "${galaxy}/database/control.sqlite"
+    fi
+    if [ ! -f "${galaxy}/config/shed_tool_conf.xml" ]; then
         log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" shed_tool_conf.xml > "${galaxy}/config/shed_tool_conf.xml"
     fi
     log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" galaxy.yml > "${galaxy}/config/galaxy.yml"
     log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" tpv.yml > "${galaxy}/config/tpv.yml"
-    if [ ! -d "${galaxy}/.venv" ] || ! $DEVMODE; then
+    if [ ! -d "${galaxy}/.venv" ]; then
         pushd "$galaxy"
         log_exec sh ./scripts/common_startup.sh --skip-client-build
         popd
@@ -473,8 +515,8 @@ function install_data_managers() {
     log "Installing Data Managers"
     . "${EPHEMERIS_BIN}/activate"
     #for dm in "${dm_install_list[@]}"; do
-    for dm in "${!INDEXER_DM_LIST[@]}"; do
-        dm_repo="${INDEXER_DM_LIST[$dm]}"
+    for dm in "${!DM_LIST[@]}"; do
+        dm_repo="${DM_LIST[$dm]}"
         readarray -td/ a < <(echo -n "$dm_repo")
         log_exec shed-tools install -g "$GALAXY_URL" -a "$GALAXY_ADMIN_API_KEY" \
             --skip_install_resolver_dependencies \
@@ -487,37 +529,43 @@ function install_data_managers() {
         dm_version=$(curl "$dm_version_url" | jq -r '.[-1]')
         dm_tool="toolshed.g2.bx.psu.edu/repos/${dm_repo}/${dm_version}"
         log "DM tool for '${dm}' is: ${dm_tool}"
-        INDEXER_DM_TOOL_IDS[$dm]="$dm_tool"
+        DM_TOOL_IDS[$dm]="$dm_tool"
     done
     deactivate
 }
 
 
-function generate_data_manager_tasks() {
-    local asm_id dbkey name url tool_id dm
-    #local assembly_list_file="$(basename "$ASSEMBLY_LIST_URL")"
-    log "Generating Data Manager tasks"
+function generate_fetch_data_manager_configs() {
+    local asm_id
+    log "Generating fetch Data Manager configs"
     mkdir -p "$DM_CONFIGS"
     for asm_id in "${MISSING_ASSEMBLY_LIST[@]}"; do
-        generate_dm_task 'fetch' "$asm_id"
-        for indexer in "${INDEXER_LIST[@]}"; do
-            generate_dm_task "$indexer" "$asm_id"
-        done
+        generate_dm_config 'fetch' "$asm_id"
     done
 }
 
 
-function generate_dm_task() {
+function generate_indexer_data_manager_configs() {
+    local asm_id="$1"
+    local indexer
+    log "Generating indexer Data Manager configs for: ${asm_id}"
+    for indexer in "${INDEXER_LIST[@]}"; do
+        generate_dm_config "$indexer" "$asm_id"
+    done
+}
+
+
+function generate_dm_config() {
     local dm="$1"
     local asm_id="$2"
     local dbkey=${ASSEMBLY_LIST[$asm_id]}
-    local tool_id=${INDEXER_DM_TOOL_IDS[$dm]}
+    local tool_id=${DM_TOOL_IDS[$dm]}
     local fname="${DM_CONFIGS}/${dm}-${asm_id}.yaml"
     log "Writing ${fname}"
     case "$dm" in
         fetch)
             local name=${ASSEMBLY_NAMES[$asm_id]}
-            local url="$(ucsc_fasta_url "$asm_id" "$dbkey")"
+            local url="$(ucsc_url "$asm_id" "$dbkey")"
             cat >"${fname}" <<EOF
 data_managers:
   - id: $tool_id
@@ -528,6 +576,22 @@ data_managers:
       - 'sequence_name': '$name'
       - 'reference_source|reference_source_selector': 'url'
       - 'reference_source|user_url': '$url'
+EOF
+            ;;
+        star)
+            local genome="${OVERLAYFS_UPPER}/data/${dbkey}/seq/${dbkey}.fa"
+            local nbases="$(grep -v '^>' "$genome" | tr -d '\n' | wc -c)"
+            local nseqs="$(grep -c '>' "$genome")"
+            local saindex_nbases=$(python -c "import math; print(min(14, int(math.log2(${nbases})/2 - 1)))")
+            local chr_bin_nbits=$(python -c "import math; print(min(18, int(math.log2(${nbases}/${nseqs}))))")
+            cat >"${fname}" <<EOF
+data_managers:
+  - id: $tool_id
+    params:
+      - 'all_fasta_source': '$dbkey'
+      - 'advanced_options|advanced_options_selector': 'advanced'
+      - 'advanced_options|genomeSAindexNbases': '$saindex_nbases'
+      - 'advanced_options|genomeChrBinNbits': '$chr_bin_nbits'
 EOF
             ;;
         *)
@@ -542,15 +606,16 @@ EOF
 }
 
 
-function ucsc_fasta_url() {
+function ucsc_url() {
     local asm_id="$1"
     local dbkey="$2"
+    local ext="${3:-fa.gz}"
     case "$asm_id" in
         GC?_*)
-            echo "https://${HGDOWNLOAD}/hubs/${dbkey:0:3}/${dbkey:4:3}/${dbkey:7:3}/${dbkey:10:3}/${dbkey}/${dbkey}.fa.gz"
+            echo "https://${HGDOWNLOAD}/hubs/${dbkey:0:3}/${dbkey:4:3}/${dbkey:7:3}/${dbkey:10:3}/${dbkey}/${dbkey}.${ext}"
             ;;
         *)
-            echo "https://${HGDOWNLOAD}/goldenPath/${asm_id}/bigZips/${asm_id}.fa.gz"
+            echo "https://${HGDOWNLOAD}/goldenPath/${asm_id}/bigZips/${asm_id}.${ext}"
             ;;
     esac
 }
@@ -571,7 +636,8 @@ function run_data_manager() {
 
 function update_tool_data_table_conf() {
     # update tool_data_table_conf.xml from repo
-    if diff -q tool_data_table_conf.xml "${OVERLAYFS_MOUNT}/config/tool_data_table_conf.xml"; then
+    log "Checking for tool_data_table_conf.xml changes"
+    if ! diff -u tool_data_table_conf.xml "${OVERLAYFS_MOUNT}/config/tool_data_table_conf.xml"; then
         log "Updating tool_data_table_conf.xml"
         mkdir -p "${OVERLAYFS_MOUNT}/config"
         log_exec cp tool_data_table_conf.xml "${OVERLAYFS_MOUNT}/config/tool_data_table_conf.xml"
@@ -595,6 +661,16 @@ function import_tool_data_bundle() {
                 --tool-data-path "/cvmfs/${REPO}/data" \
                 --data-table-config-path "/cvmfs/${REPO}/config/tool_data_table_conf.xml" \
                 "$bundle_uri"
+    if [ "$dm" == 'fetch' ]; then
+        # there is no "download twobit" DM and there is little harm in doing it this way
+        local dbkey=${ASSEMBLY_LIST[$asm_id]}
+        local name=${ASSEMBLY_NAMES[$asm_id]}
+        local path="/cvmfs/${REPO}/data/${dbkey}/seq/${dbkey}.2bit"
+        log "Fetching UCSC 2bit to ${path}"
+        log_exec curl -o "${OVERLAYFS_MOUNT}/data/${dbkey}/seq/${dbkey}.2bit" "$(ucsc_url "$asm_id" "$dbkey" '2bit')"
+        printf '%s\t%s\n' "$dbkey" "$path" >>"${OVERLAYFS_MOUNT}/config/twobit.loc"
+        printf '%s\t%s\t%s\n' "$dbkey" "$name" "$path" >>"${OVERLAYFS_MOUNT}/config/lastz_seqs.loc"
+    fi
 }
 
 
@@ -609,7 +685,7 @@ function reload_data_tables() {
 
 # this ia a dirty hack necessary for the cluster-based indexers to access the staged but unpublished references
 function copy_upper_to_shared() {
-    log_exec rsync -av --delete "${OVERLAYFS_UPPER}/" "${SHARED_ROOT}/upper"
+    log_exec rsync -av --exclude='.wh.*' --delete "${OVERLAYFS_UPPER}/" "${SHARED_ROOT}/upper"
 }
 
 
@@ -662,7 +738,7 @@ function post_import() {
 function copy_upper_to_stratum0() {
     log "Copying changes to Stratum 0"
     set -x
-    rsync -ah -e "ssh -o ControlPath=${SSH_MASTER_SOCKET}" --stats "${OVERLAYFS_UPPER}/" "${REPO_USER}@${REPO_STRATUM0}:/cvmfs/${REPO}"
+    rsync -ah -e "ssh -o ControlPath=${SSH_MASTER_SOCKET}" --exclude='.wh.*' --stats "${OVERLAYFS_UPPER}/" "${REPO_USER}@${REPO_STRATUM0}:/cvmfs/${REPO}"
     { rc=$?; set +x; } 2>/dev/null
     return $rc
 }
@@ -672,7 +748,7 @@ function main() {
     local message
     set_repo_vars
     fetch_assembly_list
-    mount_overlay
+    mount_overlay_cvmfs
     detect_changes
     if [ "${#MISSING_ASSEMBLY_LIST[@]}" -gt 0 ] || [ "${#MISSING_INDEX_LIST[@]}" -gt 0 ]; then
         setup_ephemeris
@@ -680,16 +756,18 @@ function main() {
         run_galaxy
         create_brc_user
         install_data_managers
-        generate_data_manager_tasks
+        generate_fetch_data_manager_configs
         setup_galaxy_maintenance_scripts
-        update_tool_data_table_conf
         start_ssh_control
         if [ "${#MISSING_ASSEMBLY_LIST[@]}" -gt 0 ]; then
             for asm_id in "${MISSING_ASSEMBLY_LIST[@]}"; do
+                [ ! -d "${OVERLAYFS_UPPER}/config" ] || clean_overlay
+                update_tool_data_table_conf
                 run_data_manager 'fetch' "$asm_id"
                 import_tool_data_bundle 'fetch' "$asm_id"
                 reload_data_tables 'all_fasta' '__dbkeys__'
                 copy_upper_to_shared
+                generate_indexer_data_manager_configs "$asm_id"
                 for indexer in "${INDEXER_LIST[@]}"; do
                     run_data_manager "$indexer" "$asm_id"
                     import_tool_data_bundle "$indexer" "$asm_id"
@@ -704,7 +782,6 @@ function main() {
                 else
                     abort_transaction "brc-initial-${asm_id}" "$message"
                 fi
-                clean_overlay
             done
         elif [ "${#MISSING_INDEX_LIST[@]}" -gt 0 ]; then
             echo "NOT IMPLEMENTED"
@@ -715,8 +792,8 @@ function main() {
     else
         log "No changes!"
     fi
-    unmount_overlay
-    $DEVMODE || clean_workspace
+    unmount_overlay_cvmfs
+    #$DEVMODE || clean_workspace
     return 0
 }
 
