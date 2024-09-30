@@ -62,8 +62,8 @@ MISSING_INDEX_LIST=()
 # the list is small, just install everything
 #DM_INSTALL_LIST=()
 
-REPO='sandbox.galaxyproject.org'
-REPO_USER='sandbox'
+REPO='brc.galaxyproject.org'
+REPO_USER='brc'
 REPO_STRATUM0='cvmfs0-psu0.galaxyproject.org'
 
 GALAXY_CLONE_URL='https://github.com/galaxyproject/galaxy.git'

@@ -16,7 +16,7 @@ galaxy:
   # not implemented as configurable, so we copy an empty shed_tool_conf.xml instead
   #shed_tools_dir: SHARED_ROOT/tools
   tool_data_path: SHARED_ROOT/tool-data
-  tool_data_table_config_path: /cvmfs/sandbox.galaxyproject.org/config/tool_data_table_conf.xml
+  tool_data_table_config_path: /cvmfs/brc.galaxyproject.org/config/tool_data_table_conf.xml
   container_resolvers:
     - cache_directory: /cvmfs/singularity.galaxyproject.org/all
       cache_directory_cacher_type: dir_mtime

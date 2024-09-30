@@ -1,7 +1,7 @@
 #!/bin/sh
 
 SSH_MASTER_SOCKET_DIR=$(pwd)
-REPO_USER='sandbox'
+REPO_USER='brc'
 REPO_STRATUM0='cvmfs0-psu0.galaxyproject.org'
 SSH_MASTER_SOCKET="${SSH_MASTER_SOCKET_DIR}/ssh-tunnel-${REPO_USER}-${REPO_STRATUM0}.sock"
 SSH_PROXYJUMP='nate@uniport.bx.psu.edu'
