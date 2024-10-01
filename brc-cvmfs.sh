@@ -187,7 +187,7 @@ function fetch_assembly_list() {
         # this forking is slow but otherwise we have to parse json in bash
         IFS=$'\n'; a=($(echo "$line" | jq -r '.[]')); unset IFS
         ASSEMBLY_LIST[${a[0]}]="${a[1]}"
-        ASSEMBLY_NAMES[${a[0]}]="${a[2]}"
+        ASSEMBLY_NAMES[${a[0]}]="${a[2]} (${a[1]})"
     done < <(jq -cr '.data[] | [.asmId, (.refSeq // .genBank), .comName]' "$assembly_list_file")
     log "Total ${#ASSEMBLY_LIST[@]} assemblies at UCSC"
 }
@@ -205,15 +205,15 @@ function detect_changes() {
                 ;;
         esac
         #log_debug "Checking assembly: ${assembly}"
-        loc="/cvmfs/${REPO}/config/all_fasta.loc"
+        loc="${OVERLAYFS_MOUNT}/config/all_fasta.loc"
         if [ ! -f "$loc" ] || ! grep -Eq "^${dbkey}\s+" "$loc"; then
             log "Missing assembly: ${asm_id} (dbkey: ${dbkey})"
             MISSING_ASSEMBLY_LIST+=("$asm_id")
             #DM_INSTALL_LIST+=("fetch")
         else
             for indexer in "${INDEXER_LIST[@]}"; do
-                loc="/cvmfs/${REPO}/config/${INDEXER_LOC_LIST[$indexer]}"
-                if [ ! -f "$loc" ] || grep -Eq "^${dbkey}\s+" "$loc"; then
+                loc="${OVERLAYFS_MOUNT}/config/${INDEXER_LOC_LIST[$indexer]}"
+                if [ ! -f "$loc" ] || ! grep -Eq "^${dbkey}\s+" "$loc"; then
                     log "Missing index: ${asm_id}/${indexer} (dbkey: ${dbkey})"
                     MISSING_INDEX_LIST+=("${asm_id}/${indexer}")
                     #DM_INSTALL_LIST+=("$indexer")
@@ -438,16 +438,16 @@ function setup_galaxy() {
     local galaxy="${WORKDIR}/galaxy"
     log "Setting up Galaxy"
     if [ -d "$SHARED_ROOT" ] && ! $DEVMODE; then
-        rm -rf "$SHARED_ROOT"
+        log_exec rm -rf "$SHARED_ROOT"
     fi
-    mkdir -p "$SHARED_ROOT"
-    if [ ! -d "$galaxy" ] || ! $DEVMODE; then
+    log_exec mkdir -p "$SHARED_ROOT"
+    if [ ! -d "$galaxy" ]; then
         log_exec git clone -b "$GALAXY_CLONE_BRANCH" --depth=1 "$GALAXY_CLONE_URL" "$galaxy"
     fi
     if ! $DEVMODE; then
-        rm -f "${galaxy}/config/shed_tool_conf.xml" \
-              "${galaxy}/database/universe.sqlite" \
-              "${galaxy}/database/control.sqlite"
+        log_exec rm -f "${galaxy}/config/shed_tool_conf.xml" \
+                       "${galaxy}/database/universe.sqlite" \
+                       "${galaxy}/database/control.sqlite"
     fi
     if [ ! -f "${galaxy}/config/shed_tool_conf.xml" ]; then
         log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" shed_tool_conf.xml > "${galaxy}/config/shed_tool_conf.xml"
@@ -654,6 +654,7 @@ function import_tool_data_bundle() {
     bundle_uri="$(log_exec ${EPHEMERIS_BIN}/python3 get-bundle-url.py --history-name "brc-${run_id}" --galaxy-api-key="$GALAXY_USER_API_KEY")"
     [ -n "$bundle_uri" ] || log_exit_error "Could not determine bundle URI!"
     log_debug "bundle URI is: $bundle_uri"
+    log_exec mkdir -p "${OVERLAYFS_MOUNT}/data"
     log_exec bwrap --bind / / \
         --dev-bind /dev /dev \
         --bind "$OVERLAYFS_MOUNT" "/cvmfs/${REPO}" -- \
