@@ -31,7 +31,7 @@ tools:
   _default:
     abstract: true
     cores: 1
-    mem: 4
+    mem: 16
   .*/bowtie_index_builder_data_manager/.*:
     params:
       container_override:
@@ -50,7 +50,7 @@ tools:
       require:
         - singularity
   .*/bwa_mem2_index_builder_data_manager/.*:
-    mem: 28
+    mem: 112
     scheduling:
       require:
         - singularity
