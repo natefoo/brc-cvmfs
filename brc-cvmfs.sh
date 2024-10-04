@@ -17,8 +17,16 @@ WORKDIR="${WORKSPACE}/${BUILD_NUMBER}"
 # for cvmfs-fuse.conf
 export WORKDIR
 
+# for import file streams
+export TMPDIR="${WORKDIR}/tmp"
+rm -rf "${TMPDIR}"
+mkdir "${TMPDIR}"
+
 HGDOWNLOAD='hgdownload2.soe.ucsc.edu'
 ASSEMBLY_LIST_URL="https://${HGDOWNLOAD}/hubs/BRC/assemblyList.json"
+
+SKIP_LIST_FILE='skip_list.txt'
+declare -a SKIP_LIST
 
 # could use the dict keys but this stays sorted
 INDEXER_LIST=(
@@ -111,6 +119,7 @@ function trap_handler() {
     { set +x; } 2>/dev/null
     # return to original dir
     while popd 2>/dev/null; do :; done || true
+    [ -z "${SKIP_LIST:-}" ] || printf "%s\n" "${SKIP_LIST[@]}" > "$SKIP_LIST_FILE"
     $GALAXY_UP && stop_galaxy
     $LOCAL_CVMFS_MOUNTED && unmount_overlay_cvmfs
     # $LOCAL_OVERLAYFS_MOUNTED does not need to be checked here since if it's true, $LOCAL_CVMFS_MOUNTED must be true
@@ -194,16 +203,20 @@ function fetch_assembly_list() {
 
 
 function detect_changes() {
-    local asm_id dbkey
-    local loc
+    local asm_id dbkey skip do_skip loc
+    readarray -t SKIP_LIST < "$SKIP_LIST_FILE"
+    declare -p SKIP_LIST
     for asm_id in "${!ASSEMBLY_LIST[@]}"; do
         dbkey="${ASSEMBLY_LIST[$asm_id]}"
-        case "$dbkey" in
-            hg38|mm39)
+        do_skip=false
+        for skip in "${SKIP_LIST[@]}"; do
+            if [ "$asm_id" == "$skip" ]; then
                 log "Skipping: ${asm_id} (dbkey: ${dbkey})"
-                continue
-                ;;
-        esac
+                do_skip=true
+                break
+            fi
+        done
+        $do_skip && continue
         #log_debug "Checking assembly: ${assembly}"
         loc="${OVERLAYFS_MOUNT}/config/all_fasta.loc"
         if [ ! -f "$loc" ] || ! grep -Eq "^${dbkey}\s+" "$loc"; then
@@ -305,6 +318,7 @@ function unmount_overlay_cvmfs() {
 
 function mount_cvmfs() {
     log "Mounting CVMFS"
+    log_exec rm -rf "$OVERLAYFS_LOWER" "$CVMFS_CACHE"
     log_exec mkdir -p "$OVERLAYFS_LOWER" "$CVMFS_CACHE"
     #log_exec cvmfs2 -o config=cvmfs-fuse.conf,allow_root "$REPO" "$OVERLAYFS_LOWER"
     log_exec cvmfs2 -o config=cvmfs-fuse.conf "$REPO" "$OVERLAYFS_LOWER"
@@ -333,6 +347,9 @@ function clean_overlay() {
     #unmount_overlay
     stop_galaxy
     unmount_overlay
+    unmount_cvmfs
+    log "Remounting CVMFS for clean"
+    mount_cvmfs
     log "Remounting OverlayFS for clean"
     mount_overlay
     verify_cvmfs_revision
@@ -671,6 +688,7 @@ function import_tool_data_bundle() {
         log_exec curl -o "${OVERLAYFS_MOUNT}/data/${dbkey}/seq/${dbkey}.2bit" "$(ucsc_url "$asm_id" "$dbkey" '2bit')"
         printf '%s\t%s\n' "$dbkey" "$path" >>"${OVERLAYFS_MOUNT}/config/twobit.loc"
         printf '%s\t%s\t%s\n' "$dbkey" "$name" "$path" >>"${OVERLAYFS_MOUNT}/config/lastz_seqs.loc"
+        log_exec ls -lh "${OVERLAYFS_MOUNT}/data/${dbkey}/seq/"
     fi
 }
 
@@ -686,7 +704,8 @@ function reload_data_tables() {
 
 # this ia a dirty hack necessary for the cluster-based indexers to access the staged but unpublished references
 function copy_upper_to_shared() {
-    log_exec rsync -av --exclude='.wh.*' --delete "${OVERLAYFS_UPPER}/" "${SHARED_ROOT}/upper"
+    log_exec rm -rf "${SHARED_ROOT}/upper"
+    log_exec rsync -av --exclude='.wh.*' "${OVERLAYFS_UPPER}/" "${SHARED_ROOT}/upper"
 }
 
 
@@ -730,6 +749,19 @@ function clean_workspace() {
 
 
 function post_import() {
+    #log "Verifying loc file line counts"
+    #if [ $(wc -l "${OVERLAYFS_UPPER}/config/"*.loc | awk '$2 != "total" {print $1}' | sort -n | uniq | wc -l) -ne 1 ]; then
+    #    log_exit_error "Terminating build: loc files have differing line counts"
+    #fi
+    local loc
+    local lastloc='_init_'
+    log "Verifying all locs have matching first column"
+    for loc in "${OVERLAYFS_MOUNT}/config/"*.loc; do
+        if [ "$lastloc" != '_init_' ] && ! diff -u <(awk -F$'\t' '{print $1}' "$lastloc") <(awk -F$'\t' '{print $1}' "$loc"); then
+            log_exit_error "loc mismatch: ${loc} != ${lastloc}"
+        fi
+        lastloc="$loc"
+    done
     log "Running post-import tasks"
     log_exec find "$OVERLAYFS_UPPER" -perm -u+r -not -perm -o+r -not -type l -print0 | xargs -0 --no-run-if-empty chmod go+r
     log_exec find "$OVERLAYFS_UPPER" -perm -u+rx -not -perm -o+rx -not -type l -print0 | xargs -0 --no-run-if-empty chmod go+rx
@@ -752,6 +784,7 @@ function main() {
     mount_overlay_cvmfs
     detect_changes
     if [ "${#MISSING_ASSEMBLY_LIST[@]}" -gt 0 ] || [ "${#MISSING_INDEX_LIST[@]}" -gt 0 ]; then
+        log "Total ${#MISSING_ASSEMBLY_LIST[@]} assemblies missing"
         setup_ephemeris
         setup_galaxy
         run_galaxy
@@ -764,7 +797,11 @@ function main() {
             for asm_id in "${MISSING_ASSEMBLY_LIST[@]}"; do
                 [ ! -d "${OVERLAYFS_UPPER}/config" ] || clean_overlay
                 update_tool_data_table_conf
-                run_data_manager 'fetch' "$asm_id"
+                if ! run_data_manager 'fetch' "$asm_id"; then
+                    log_error "Fetch failed, adding to skip list: ${asm_id}"
+                    SKIP_LIST+=("$asm_id")
+                    continue
+                fi
                 import_tool_data_bundle 'fetch' "$asm_id"
                 reload_data_tables 'all_fasta' '__dbkeys__'
                 copy_upper_to_shared
