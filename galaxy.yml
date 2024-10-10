@@ -2,7 +2,7 @@
 
 gravity:
   gunicorn:
-    bind: '127.0.0.1:8080'
+    bind: '0.0.0.0:8080'
   celery:
     enable: false
     enable_beat: false
@@ -16,7 +16,9 @@ galaxy:
   # not implemented as configurable, so we copy an empty shed_tool_conf.xml instead
   #shed_tools_dir: SHARED_ROOT/tools
   tool_data_path: SHARED_ROOT/tool-data
-  tool_data_table_config_path: /cvmfs/brc.galaxyproject.org/config/tool_data_table_conf.xml
+  #tool_data_table_config_path: /cvmfs/brc.galaxyproject.org/config/tool_data_table_conf.xml
+  #tool_data_table_config_path: SHARED_ROOT/config/tool_data_table_conf.xml
+  tool_data_table_config_path: tool_data_table_conf.xml
   container_resolvers:
     - cache_directory: /cvmfs/singularity.galaxyproject.org/all
       cache_directory_cacher_type: dir_mtime

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# FIXME: this is now actually "get-dataset-id"
 import argparse
 import os
 
@@ -37,6 +38,7 @@ datasets = gi.datasets.get_datasets(
     history_id=history_id, extension=EXT, order="create_time-dsc"
 )
 dataset_id = datasets[0]['id']
+print(dataset_id)
 
-bundle_url = f"{args.galaxy_url}/api/datasets/{dataset_id}/display?to_ext={EXT}"
-print(bundle_url)
+#bundle_url = f"{args.galaxy_url}/api/datasets/{dataset_id}/display?to_ext={EXT}"
+#print(bundle_url)
