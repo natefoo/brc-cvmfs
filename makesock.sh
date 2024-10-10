@@ -8,7 +8,7 @@ SSH_PROXYJUMP='nate@uniport.bx.psu.edu'
 
 if [ ! -S "$SSH_MASTER_SOCKET" ]; then
     set -x
-    ssh -M -S "$SSH_MASTER_SOCKET" -Nfn -o ControlPersist=48h -o "ProxyJump=${SSH_PROXYJUMP}" -l "$REPO_USER" "$REPO_STRATUM0"
+    ssh -M -S "$SSH_MASTER_SOCKET" -Nfn -o ControlPersist=168h -o "ProxyJump=${SSH_PROXYJUMP}" -l "$REPO_USER" "$REPO_STRATUM0"
     { set +x; } 2>/dev/null
 else
     set -x

@@ -46,6 +46,7 @@ tools:
       require:
         - singularity
   .*/bwa_mem_index_builder_data_manager/.*:
+    mem: 32
     scheduling:
       require:
         - singularity
