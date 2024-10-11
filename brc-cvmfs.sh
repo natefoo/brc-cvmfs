@@ -81,7 +81,7 @@ export REPO_STRATUM0='cvmfs0-psu0.galaxyproject.org'
 GALAXY_CLONE_URL='https://github.com/galaxyproject/galaxy.git'
 GALAXY_CLONE_BRANCH='dev'
 
-export GALAXY_URL='http://jetstream2:8080'
+export GALAXY_URL='http://jetstream2.galaxyproject.org:8080'
 GALAXY_ADMIN_API_KEY='c0ffee'
 export GALAXY_USER_API_KEY=
 
