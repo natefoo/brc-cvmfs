@@ -108,7 +108,7 @@ SSH_MASTER_SOCKET_CREATED=false
 OVERLAYFS_UPPER=
 OVERLAYFS_LOWER=
 OVERLAYFS_WORK=
-OVERLAYFS_MOUNT=
+export OVERLAYFS_MOUNT=
 export EPHEMERIS_BIN=
 export GALAXY_MAINTENANCE_SCRIPTS_BIN=
 export IMPORT_TMPDIR=
@@ -119,18 +119,21 @@ LOCAL_CVMFS_MOUNTED=false
 LOCAL_OVERLAYFS_MOUNTED=false
 GALAXY_UP=false
 
-ONE=false
+NUM=0
 
-while getopts ":1p" opt; do
+while getopts ":1pn:" opt; do
     case "$opt" in
         1)
-            ONE=true
+            NUM=1
+            ;;
+        n)
+            NUM=$OPTARG
             ;;
         p)
             PUBLISH=true
             ;;
         *)
-            echo "usage: $0 [-1 (one assembly only, vasili)] [-p (publish)]"
+            echo "usage: $0 [-1 (one assembly only, vasili aka -n1)] [-n (num of assemblies to do)] [-p (publish)]"
             exit 1
             ;;
     esac
@@ -196,7 +199,7 @@ export -f log_exit_error
 
 
 function log_exit() {
-    echo "$@"
+    log "$@"
     exit 0
 }
 
@@ -877,6 +880,7 @@ function main() {
         generate_fetch_data_manager_configs
         start_ssh_control
         setup_galaxy_maintenance_scripts
+        local i=0
         if [ "${#MISSING_ASSEMBLY_LIST[@]}" -gt 0 ]; then
             for asm_id in "${MISSING_ASSEMBLY_LIST[@]}"; do
                 if $USE_LOCAL_OVERLAYFS; then
@@ -895,7 +899,7 @@ function main() {
                 reload_data_tables 'all_fasta' '__dbkeys__'
                 generate_indexer_data_manager_configs "$asm_id"
                 log "Parallelizing indexer data managers"
-                parallel run_dm_and_import {} "$asm_id" ::: "${INDEXER_LIST[@]}"
+                parallel -j ${#INDEXER_LIST[@]} run_dm_and_import {} "$asm_id" ::: "${INDEXER_LIST[@]}"
                 #for indexer in "${INDEXER_LIST[@]}"; do
                 #    run_data_manager "$indexer" "$asm_id"
                 #    import_tool_data_bundle "$indexer" "$asm_id"
@@ -912,7 +916,9 @@ function main() {
                 else
                     abort_transaction "brc-initial-${asm_id}" "$message"
                 fi
-                ! $ONE || { log_exit "Exiting after single assembly as requested"; }
+                i=$((i + 1))
+                [ $NUM -eq 0 -o $i -lt $NUM ] || { log_exit "Exiting after ${i} assemblies as requested"; }
+                [ ! -f exit ] || { rm -f exit; log_exit "Exiting due to presence of exit file"; }
             done
         elif [ "${#MISSING_INDEX_LIST[@]}" -gt 0 ]; then
             echo "NOT IMPLEMENTED"
