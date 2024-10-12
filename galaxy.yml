@@ -8,6 +8,8 @@ gravity:
     enable_beat: false
 
 galaxy:
+  database_connection: sqlite:///database/universe.sqlite?isolation_level=IMMEDIATE'
+  install_database_connection: sqlite:///database/install.sqlite?isolation_level=IMMEDIATE'
   admin_users: brc@galaxyproject.org
   bootstrap_admin_api_key: c0ffee
   conda_auto_init: false

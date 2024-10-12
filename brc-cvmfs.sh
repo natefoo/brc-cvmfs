@@ -7,6 +7,7 @@ set -euo pipefail
 : ${DEBUG:=$DEVMODE}
 : ${SHARED_ROOT:='/jetstream2/scratch/idc/brc'}
 
+export DEBUG
 
 # Set by Jenkins if we're running in Jenkins
 #: ${WORKSPACE:="$(mktemp -d -t brc.work.XXXXXX)"}
@@ -120,8 +121,9 @@ LOCAL_OVERLAYFS_MOUNTED=false
 GALAXY_UP=false
 
 NUM=0
+RUN_ID=
 
-while getopts ":1pn:" opt; do
+while getopts ":1pn:r:" opt; do
     case "$opt" in
         1)
             NUM=1
@@ -131,6 +133,9 @@ while getopts ":1pn:" opt; do
             ;;
         p)
             PUBLISH=true
+            ;;
+        r)
+            RUN_ID=$OPTARG
             ;;
         *)
             echo "usage: $0 [-1 (one assembly only, vasili aka -n1)] [-n (num of assemblies to do)] [-p (publish)]"
@@ -462,6 +467,8 @@ function begin_transaction() {
         [ $sleep -gt $max_sleep ] && sleep="$max_sleep"
         let elapsed="$(date +%s)-${start}"
     done
+    # abort keeps setting permissions to 700 on teh stratum 0
+    exec_on chmod 0755 "$OVERLAYFS_MOUNT"
     CVMFS_TRANSACTION_UP=true
 }
 
@@ -497,8 +504,9 @@ function create_workdir() {
 function setup_galaxy() {
     local galaxy="${WORKDIR}/galaxy"
     log "Setting up Galaxy"
-    if [ -d "$SHARED_ROOT" ] && ! $DEVMODE; then
-        log_exec rm -rf "$SHARED_ROOT"
+    if [ -d "${SHARED_ROOT}/jobs" ] && ! $DEVMODE; then
+        # preserve tools so DMs don't have to be reinstalled
+        log_exec rm -rf "$SHARED_ROOT"/{jobs,objects,tool-data}
     fi
     log_exec mkdir -p "$SHARED_ROOT" "${SHARED_ROOT}/tool-data/config"
     if [ ! -d "$galaxy" ]; then
@@ -570,7 +578,7 @@ function stop_galaxy() {
 
 
 function install_data_managers() {
-    local dm_install_list dm dm_repo a dm_version_url dm_version dm_tool
+    local dm_install_list dm
     log "Generating Data Manager tool list"
     #log_exec _idc-data-managers-to-tools
     #IFS=$'\n'; dm_install_list=($(sort <<<"${DM_INSTALL_LIST[*]}" | uniq)); unset IFS
@@ -578,22 +586,29 @@ function install_data_managers() {
     . "${EPHEMERIS_BIN}/activate"
     #for dm in "${dm_install_list[@]}"; do
     for dm in "${!DM_LIST[@]}"; do
-        dm_repo="${DM_LIST[$dm]}"
-        readarray -td/ a < <(echo -n "$dm_repo")
-        log_exec shed-tools install -g "$GALAXY_URL" -a "$GALAXY_ADMIN_API_KEY" \
-            --skip_install_resolver_dependencies \
-            --skip_install_repository_dependencies \
-            --owner "${a[0]}" \
-            --name "${a[1]}"
-        dm_version_url="${GALAXY_URL}/api/tools?key=${GALAXY_ADMIN_API_KEY}&tool_id=${a[2]}"
-        # this breaks on e.g. +galaxy versions, hopefully they are already sorted (and there should be only one anyway)
-        #dm_version=$(curl "$dm_version_url" | jq -r 'sort_by(split(".") | map(tonumber))[-1]')
-        dm_version=$(curl "$dm_version_url" | jq -r '.[-1]')
-        dm_tool="toolshed.g2.bx.psu.edu/repos/${dm_repo}/${dm_version}"
-        log "DM tool for '${dm}' is: ${dm_tool}"
-        DM_TOOL_IDS[$dm]="$dm_tool"
+        install_data_manager "$dm"
     done
     deactivate
+}
+
+
+function install_data_manager() {
+    local dm_repo a dm_version_url dm_version dm_tool
+    local dm="$1"
+    dm_repo="${DM_LIST[$dm]}"
+    readarray -td/ a < <(echo -n "$dm_repo")
+    log_exec shed-tools install -g "$GALAXY_URL" -a "$GALAXY_ADMIN_API_KEY" \
+        --skip_install_resolver_dependencies \
+        --skip_install_repository_dependencies \
+        --owner "${a[0]}" \
+        --name "${a[1]}"
+    dm_version_url="${GALAXY_URL}/api/tools?key=${GALAXY_ADMIN_API_KEY}&tool_id=${a[2]}"
+    # this breaks on e.g. +galaxy versions, hopefully they are already sorted (and there should be only one anyway)
+    #dm_version=$(curl "$dm_version_url" | jq -r 'sort_by(split(".") | map(tonumber))[-1]')
+    dm_version=$(curl "$dm_version_url" | jq -r '.[-1]')
+    dm_tool="toolshed.g2.bx.psu.edu/repos/${dm_repo}/${dm_version}"
+    log "DM tool for '${dm}' is: ${dm_tool}"
+    DM_TOOL_IDS[$dm]="$dm_tool"
 }
 
 
@@ -623,27 +638,31 @@ function generate_dm_config() {
     local dbkey=${ASSEMBLY_LIST[$asm_id]}
     local tool_id=${DM_TOOL_IDS[$dm]}
     local fname="${DM_CONFIGS}/${dm}-${asm_id}.yaml"
+    # TODO: this is a bit clumsy
+    if [ -n "$RUN_ID" ]; then
+        local genome="/cvmfs/${REPO}/data/${dbkey}/seq/${dbkey}.fa"
+    else
+        local genome="${SHARED_ROOT}/tool-data/${dbkey}/seq/${dbkey}.fa"
+    fi
     log "Writing ${fname}"
     case "$dm" in
         fetch)
             local name=${ASSEMBLY_NAMES[$asm_id]}
             local url="$(ucsc_url "$asm_id" "$dbkey")"
+            # name is unquoted because it can contain internal single quotes, should always be a YAML string...
             cat >"${fname}" <<EOF
 data_managers:
   - id: $tool_id
     params:
       - 'dbkey_source|dbkey_source_selector': 'new'
       - 'dbkey_source|dbkey': '$dbkey'
-      - 'dbkey_source|dbkey_name': '$name'
-      - 'sequence_name': '$name'
+      - 'dbkey_source|dbkey_name': $name
+      - 'sequence_name': $name
       - 'reference_source|reference_source_selector': 'url'
       - 'reference_source|user_url': '$url'
 EOF
             ;;
         star)
-            #local genome="${OVERLAYFS_UPPER}/data/${dbkey}/seq/${dbkey}.fa"
-            # FIXME: this would not work if we were creating indexes on already-published refs
-            local genome="${SHARED_ROOT}/tool-data/${dbkey}/seq/${dbkey}.fa"
             local nbases="$(grep -v '^>' "$genome" | tr -d '\n' | wc -c)"
             local nseqs="$(grep -c '>' "$genome")"
             local saindex_nbases=$(python -c "import math; print(min(14, int(math.log2(${nbases})/2 - 1)))")
@@ -656,6 +675,24 @@ data_managers:
       - 'advanced_options|advanced_options_selector': 'advanced'
       - 'advanced_options|genomeSAindexNbases': '$saindex_nbases'
       - 'advanced_options|genomeChrBinNbits': '$chr_bin_nbits'
+EOF
+            ;;
+        bwa-mem)
+            local alg='is'
+            local size="$(stat -c %s "$genome")"
+            [ -n "$size" ] || log_exit_error "Failed to stat: ${genome}"
+            # manual says < 2GB is good for 'is' alg and that's what the DM auto setting does, but in practice with as
+            # little as 1.3 GB we get:
+            # [is_bwt] Failed to allocate 18446744066759539268 bytes at is.c line 211: Cannot allocate memory
+            if [ $size -gt $((1024**3)) ]; then
+                alg='bwtsw'
+            fi
+            cat >"${fname}" <<EOF
+data_managers:
+  - id: $tool_id
+    params:
+      - 'all_fasta_source': '$dbkey'
+      - 'index_algorithm': '$alg'
 EOF
             ;;
         *)
@@ -686,6 +723,8 @@ function ucsc_url() {
 
 
 function run_data_manager() {
+    # for parallel
+    set -euo pipefail
     local dm="$1"
     local asm_id="$2"
     local run_id="${dm}-${asm_id}"
@@ -711,6 +750,8 @@ function update_tool_data_table_conf() {
 
 
 function import_tool_data_bundle() {
+    # for parallel
+    set -euo pipefail
     local dm="$1"
     local asm_id="$2"
     local run_id="${dm}-${asm_id}"
@@ -737,6 +778,7 @@ function import_tool_data_bundle() {
     fi
     if [ "$dm" == 'fetch' ]; then
         post_import_fetch_dm "$asm_id" "$dataset_id"
+        fetch_twobit "$asm_id"
     fi
 }
 export -f import_tool_data_bundle
@@ -763,6 +805,12 @@ function post_import_fetch_dm() {
     exec_on tail -1 "${OVERLAYFS_MOUNT}/config/all_fasta.loc" | sed "s#/cvmfs/${REPO}/data#${SHARED_ROOT}/tool-data#" > "${SHARED_ROOT}/tool-data/config/all_fasta.loc"
     exec_on tail -1 "${OVERLAYFS_MOUNT}/config/dbkeys.loc" | sed "s#/cvmfs/${REPO}/data#${SHARED_ROOT}/tool-data#" > "${SHARED_ROOT}/tool-data/config/dbkeys.loc"
     log_exec cat "${SHARED_ROOT}"/tool-data/config/*.loc
+}
+
+
+function fetch_twobit() {
+    local asm_id="$1"
+    local dbkey=${ASSEMBLY_LIST[$asm_id]}
     # there is no "download twobit" DM and there is little harm in doing it this way
     local name=${ASSEMBLY_NAMES[$asm_id]}
     local path="/cvmfs/${REPO}/data/${dbkey}/seq/${dbkey}.2bit"
@@ -771,6 +819,22 @@ function post_import_fetch_dm() {
     printf '%s\t%s\n' "$dbkey" "$path" | exec_on tee -a "${OVERLAYFS_MOUNT}/config/twobit.loc"
     printf '%s\t%s\t%s\n' "$dbkey" "$name" "$path" | exec_on tee -a "${OVERLAYFS_MOUNT}/config/lastz_seqs.loc"
     exec_on ls -lh "${OVERLAYFS_MOUNT}/data/${dbkey}/seq/"
+}
+
+
+function link_shared_to_cvmfs() {
+    # for running indexers after the genome is published
+    local asm_id="$1"
+    local dbkey=${ASSEMBLY_LIST[$asm_id]}
+    log "Updating loc files for indexers"
+    log_exec rm -rf "${SHARED_ROOT}/tool-data"
+    log_exec mkdir -p "${SHARED_ROOT}/tool-data/config" \
+        "${SHARED_ROOT}/tool-data/${dbkey}/seq" \
+        "${SHARED_ROOT}/tool-data/${dbkey}/len"
+    log_exec test -f "/cvmfs/${REPO}/data/${dbkey}/seq/${dbkey}.fa"
+    log_exec grep "^${dbkey}"$'\t' "/cvmfs/$REPO/config/all_fasta.loc" | tee "${SHARED_ROOT}/tool-data/config/all_fasta.loc"
+    log_exec test -f "/cvmfs/${REPO}/data/${dbkey}/len/${dbkey}.len"
+    log_exec grep "^${dbkey}"$'\t' "/cvmfs/$REPO/config/dbkeys.loc" | tee "${SHARED_ROOT}/tool-data/config/dbkeys.loc"
 }
 
 
@@ -831,7 +895,7 @@ function clean_workspace() {
 }
 
 
-function post_import() {
+function verify_locs() {
     #log "Verifying loc file line counts"
     #if [ $(wc -l "${OVERLAYFS_UPPER}/config/"*.loc | awk '$2 != "total" {print $1}' | sort -n | uniq | wc -l) -ne 1 ]; then
     #    log_exit_error "Terminating build: loc files have differing line counts"
@@ -839,7 +903,7 @@ function post_import() {
     local loc
     local lastloc='_init_'
     declare -a locs
-    mapfile -t locs < <(exec_on compgen -G "'${OVERLAYFS_UPPER}/config/*.loc'")
+    mapfile -t locs < <(exec_on compgen -G "'${OVERLAYFS_MOUNT}/config/*.loc'")
     log "Verifying all locs have matching first column"
     for loc in ${locs[@]}; do
         log_debug "$loc"
@@ -849,6 +913,10 @@ function post_import() {
         fi
         lastloc="$loc"
     done
+}
+
+
+function post_import() {
     log "Running post-import tasks"
     exec_on find "$OVERLAYFS_UPPER" -perm -u+r -not -perm -o+r -not -type l -print0 | exec_on xargs -0 --no-run-if-empty chmod go+r
     exec_on find "$OVERLAYFS_UPPER" -perm -u+rx -not -perm -o+rx -not -type l -print0 | exec_on xargs -0 --no-run-if-empty chmod go+rx
@@ -870,7 +938,47 @@ function main() {
     fetch_assembly_list
     mount_overlay_cvmfs
     detect_changes
-    if [ "${#MISSING_ASSEMBLY_LIST[@]}" -gt 0 ] || [ "${#MISSING_INDEX_LIST[@]}" -gt 0 ]; then
+    if [ -n "$RUN_ID" ]; then
+        local dm="${RUN_ID%-*}"
+        # this breaks if asm_id contains a -
+        local asm_id="${RUN_ID##*-}"
+        [ "$dm" != 'fetch' ] || log_exit_error "NOT IMPLEMENTED"
+        log "Performing run: ${RUN_ID}"
+        log_debug "dm=$dm asm_id=$asm_id"
+        setup_ephemeris
+        setup_galaxy
+        link_shared_to_cvmfs "$asm_id"
+        run_galaxy
+        create_brc_user
+        . "${EPHEMERIS_BIN}/activate"
+        install_data_manager "$dm"
+        deactivate
+        start_ssh_control
+        setup_galaxy_maintenance_scripts
+        if $USE_LOCAL_OVERLAYFS; then
+            mount_overlay_cvmfs
+        else
+            begin_transaction 600
+            exec_on mkdir -p "$IMPORT_TMPDIR"
+        fi
+        # this is not necessary but does confirm they are loaded
+        reload_data_tables 'all_fasta' '__dbkeys__'
+        generate_dm_config "$dm" "$asm_id"
+        run_dm_and_import "$dm" "$asm_id"
+        check_for_repo_changes
+        post_import
+        if $USE_LOCAL_OVERLAYFS; then
+            begin_transaction 600
+            copy_upper_to_stratum0
+        fi
+        read -p "TO START PRESS ANY KEY"
+        message="${dm} index for assembly: ${asm_id}"
+        if $PUBLISH; then
+            publish_transaction "brc-${RUN_ID}" "$message"
+        else
+            abort_transaction "brc-${RUN_ID}" "$message"
+        fi
+    elif [ "${#MISSING_ASSEMBLY_LIST[@]}" -gt 0 ] || [ "${#MISSING_INDEX_LIST[@]}" -gt 0 ]; then
         log "Total ${#MISSING_ASSEMBLY_LIST[@]} assemblies missing"
         setup_ephemeris
         setup_galaxy
@@ -899,12 +1007,13 @@ function main() {
                 reload_data_tables 'all_fasta' '__dbkeys__'
                 generate_indexer_data_manager_configs "$asm_id"
                 log "Parallelizing indexer data managers"
-                parallel -j ${#INDEXER_LIST[@]} run_dm_and_import {} "$asm_id" ::: "${INDEXER_LIST[@]}"
+                parallel -j ${#INDEXER_LIST[@]} --halt now,fail=1 run_dm_and_import {} "$asm_id" ::: "${INDEXER_LIST[@]}"
                 #for indexer in "${INDEXER_LIST[@]}"; do
                 #    run_data_manager "$indexer" "$asm_id"
                 #    import_tool_data_bundle "$indexer" "$asm_id"
                 #done
                 check_for_repo_changes
+                verify_locs
                 post_import
                 if $USE_LOCAL_OVERLAYFS; then
                     begin_transaction 600
