@@ -1001,6 +1001,7 @@ function main() {
                 if ! run_data_manager 'fetch' "$asm_id"; then
                     log_error "Fetch failed, adding to skip list: ${asm_id}"
                     SKIP_LIST+=("$asm_id")
+                    $CVMFS_TRANSACTION_UP && abort_transaction
                     continue
                 fi
                 import_tool_data_bundle 'fetch' "$asm_id"
