@@ -23,7 +23,7 @@ destinations:
       # FIXME: this will break for running indexers on already-published genomes
       #singularity_volumes: "$tool_directory:ro,$job_directory:ro,$working_directory:rw,$default_file_path:rw,SHARED_ROOT/upper:/cvmfs/brc.galaxyproject.org:ro"
       #singularity_volumes: "$tool_directory:ro,$job_directory:ro,$working_directory:rw,$default_file_path:rw,SHARED_ROOT/tool-data:ro"
-      singularity_volumes: "$tool_directory:ro,$job_directory:ro,$working_directory:rw,$default_file_path:rw,SHARED_ROOT/tool-data:ro,/cvmfs/brc.galaxyproject.org:ro"
+      singularity_volumes: "$tool_directory:ro,$job_directory:ro,$working_directory:rw,$default_file_path:rw,SHARED_ROOT/tool-data:ro,/cvmfs/REPO:ro"
       require_container: true
     scheduling:
       require:
@@ -34,6 +34,11 @@ tools:
     abstract: true
     cores: 1
     mem: 16
+  .*/sam_fasta_index_builder/.*:
+    mem: 4
+    scheduling:
+      require:
+        - singularity
   .*/bowtie_index_builder_data_manager/.*:
     params:
       container_override:

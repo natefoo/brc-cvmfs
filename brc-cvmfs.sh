@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+#export REPO='sandbox.galaxyproject.org'
+#export REPO_USER='sandbox'
+export REPO='brc.galaxyproject.org'
+export REPO_USER='brc'
+export REPO_STRATUM0='cvmfs0-psu0.galaxyproject.org'
+
 # Set this variable to 'true' to publish on successful installation
 : ${PUBLISH:=false}
 : ${DEVMODE:=false}
@@ -20,7 +26,7 @@ WORKDIR="${WORKSPACE}/${BUILD_NUMBER}"
 # for cvmfs-fuse.conf
 export WORKDIR
 
-REMOTE_WORKDIR="/tmp/brc"
+REMOTE_WORKDIR="/tmp/brc-${REPO_USER}"
 
 # for import file streams
 export TMPDIR="${WORKDIR}/tmp"
@@ -35,10 +41,11 @@ declare -a SKIP_LIST
 
 # could use the dict keys but this stays sorted
 INDEXER_LIST=(
+    fasta
     bowtie1
     bowtie2
-    bwa-mem
-    bwa-mem2
+    bwa_mem
+    bwa_mem2
     star
     hisat2
 )
@@ -46,20 +53,22 @@ INDEXER_LIST=(
 #    snpeff
 
 declare -rA INDEXER_LOC_LIST=(
+    ['fasta']='sam_fa_indices.loc'
     ['bowtie1']='bowtie_indices.loc'
     ['bowtie2']='bowtie2_indices.loc'
-    ['bwa-mem']='bwa_mem_index.loc'
-    ['bwa-mem2']='bwa_mem2_index.loc'
+    ['bwa_mem']='bwa_mem_index.loc'
+    ['bwa_mem2']='bwa_mem2_index.loc'
     ['star']='rnastar_index2x_versioned.loc'
     ['hisat2']='hisat2_indexes.loc'
 )
 
 declare -rA DM_LIST=(
     ['fetch']='devteam/data_manager_fetch_genome_dbkeys_all_fasta/data_manager_fetch_genome_all_fasta_dbkey'
+    ['fasta']='devteam/data_manager_sam_fasta_index_builder/sam_fasta_index_builder'
     ['bowtie1']='iuc/data_manager_bowtie_index_builder/bowtie_index_builder_data_manager'
     ['bowtie2']='devteam/data_manager_bowtie2_index_builder/bowtie2_index_builder_data_manager'
-    ['bwa-mem']='devteam/data_manager_bwa_mem_index_builder/bwa_mem_index_builder_data_manager'
-    ['bwa-mem2']='iuc/data_manager_bwa_mem2_index_builder/bwa_mem2_index_builder_data_manager'
+    ['bwa_mem']='devteam/data_manager_bwa_mem_index_builder/bwa_mem_index_builder_data_manager'
+    ['bwa_mem2']='iuc/data_manager_bwa_mem2_index_builder/bwa_mem2_index_builder_data_manager'
     ['star']='iuc/data_manager_star_index_builder/rna_star_index_builder_data_manager'
     ['hisat2']='iuc/data_manager_hisat2_index_builder/hisat2_index_builder_data_manager'
 )
@@ -74,10 +83,6 @@ MISSING_ASSEMBLY_LIST=()
 MISSING_INDEX_LIST=()
 # the list is small, just install everything
 #DM_INSTALL_LIST=()
-
-export REPO='brc.galaxyproject.org'
-export REPO_USER='brc'
-export REPO_STRATUM0='cvmfs0-psu0.galaxyproject.org'
 
 GALAXY_CLONE_URL='https://github.com/galaxyproject/galaxy.git'
 GALAXY_CLONE_BRANCH='dev'
@@ -121,12 +126,16 @@ LOCAL_OVERLAYFS_MOUNTED=false
 GALAXY_UP=false
 
 NUM=0
+BATCH=0
 RUN_ID=
 
-while getopts ":1pn:r:" opt; do
+while getopts ":1b:pn:r:" opt; do
     case "$opt" in
         1)
             NUM=1
+            ;;
+        b)
+            BATCH=$OPTARG
             ;;
         n)
             NUM=$OPTARG
@@ -138,7 +147,7 @@ while getopts ":1pn:r:" opt; do
             RUN_ID=$OPTARG
             ;;
         *)
-            echo "usage: $0 [-1 (one assembly only, vasili aka -n1)] [-n (num of assemblies to do)] [-p (publish)]"
+            echo "usage: $0 [-1 (one assembly only, vasili aka -n1)] [-n (num of assemblies to do)] [-b (batch num runs in one transaction)] [-p (publish)]"
             exit 1
             ;;
     esac
@@ -227,6 +236,7 @@ function fetch_assembly_list() {
         log_exec curl -O "$ASSEMBLY_LIST_URL"
     fi
     #ASSEMBLY_LIST=( $(jq -cr '.data[] | (.refSeq // .genBank)' "$assembly_list_file" | LC_ALL=C sort) )
+    # TODO: bash assoc arrays are not ordered (or rather, they are hash ordered), it would probably be better to put asm_ids in a normal array
     while read line; do
         # this forking is slow but otherwise we have to parse json in bash
         IFS=$'\n'; a=($(echo "$line" | jq -r '.[]')); unset IFS
@@ -238,7 +248,7 @@ function fetch_assembly_list() {
 
 
 function detect_changes() {
-    local asm_id dbkey skip do_skip loc
+    local asm_id dbkey skip do_skip loc dm run_id
     readarray -t SKIP_LIST < "$SKIP_LIST_FILE"
     declare -p SKIP_LIST
     for asm_id in "${!ASSEMBLY_LIST[@]}"; do
@@ -259,12 +269,13 @@ function detect_changes() {
             MISSING_ASSEMBLY_LIST+=("$asm_id")
             #DM_INSTALL_LIST+=("fetch")
         else
-            for indexer in "${INDEXER_LIST[@]}"; do
-                loc="${LOCAL_CVMFS_MOUNT}/config/${INDEXER_LOC_LIST[$indexer]}"
+            for dm in "${INDEXER_LIST[@]}"; do
+                loc="${LOCAL_CVMFS_MOUNT}/config/${INDEXER_LOC_LIST[$dm]}"
                 if [ ! -f "$loc" ] || ! grep -Eq "^${dbkey}\s+" "$loc"; then
-                    log "Missing index: ${asm_id}/${indexer} (dbkey: ${dbkey})"
-                    MISSING_INDEX_LIST+=("${asm_id}/${indexer}")
-                    #DM_INSTALL_LIST+=("$indexer")
+                    run_id="${dm}-${asm_id}"
+                    log "Missing index: ${run_id} (dbkey: ${dbkey})"
+                    MISSING_INDEX_LIST+=("$run_id")
+                    #DM_INSTALL_LIST+=("$dm")
                 fi
             done
         fi
@@ -521,7 +532,7 @@ function setup_galaxy() {
         log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" shed_tool_conf.xml > "${galaxy}/config/shed_tool_conf.xml"
     fi
     log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" galaxy.yml > "${galaxy}/config/galaxy.yml"
-    log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" tpv.yml > "${galaxy}/config/tpv.yml"
+    log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" -e "s#REPO#${REPO}#g" tpv.yml > "${galaxy}/config/tpv.yml"
     log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" build_tool_data_table_conf.xml > "${galaxy}/config/tool_data_table_conf.xml"
     if [ ! -d "${galaxy}/.venv" ]; then
         pushd "$galaxy"
@@ -763,6 +774,7 @@ function import_tool_data_bundle() {
     log_debug "bundle URI is: $bundle_uri"
     exec_on mkdir -p "${OVERLAYFS_MOUNT}/data"
     if $USE_LOCAL_OVERLAYFS; then
+        #log_exec touch "${OVERLAYFS_MOUNT}/config/${INDEXER_LOC_LIST[$dm]}"
         log_exec bwrap --bind / / \
             --dev-bind /dev /dev \
             --bind "$OVERLAYFS_MOUNT" "/cvmfs/${REPO}" -- \
@@ -771,6 +783,7 @@ function import_tool_data_bundle() {
                     --data-table-config-path "/cvmfs/${REPO}/config/tool_data_table_conf.xml" \
                     "$bundle_uri"
     else
+        #exec_on touch "${OVERLAYFS_MOUNT}/config/${INDEXER_LOC_LIST[$dm]}"
         exec_on TMPDIR=$IMPORT_TMPDIR ${GALAXY_MAINTENANCE_SCRIPTS_BIN}/galaxy-import-data-bundle \
             --tool-data-path "/cvmfs/${REPO}/data" \
             --data-table-config-path "/cvmfs/${REPO}/config/tool_data_table_conf.xml" \
@@ -932,16 +945,26 @@ function copy_upper_to_stratum0() {
 }
 
 
+function publish_or_abort() {
+    local tag="$1"
+    local message="$2"
+    if $PUBLISH; then
+        publish_transaction "$tag" "$message"
+    else
+        abort_transaction "$tag" "$message"
+    fi
+}
+
+
 function main() {
-    local message
+    local dm run_id asm_id tag message
     set_repo_vars
     fetch_assembly_list
     mount_overlay_cvmfs
     detect_changes
     if [ -n "$RUN_ID" ]; then
-        local dm="${RUN_ID%-*}"
-        # this breaks if asm_id contains a -
-        local asm_id="${RUN_ID##*-}"
+        dm="${RUN_ID%%-*}"
+        asm_id="${RUN_ID#*-}"
         [ "$dm" != 'fetch' ] || log_exit_error "NOT IMPLEMENTED"
         log "Performing run: ${RUN_ID}"
         log_debug "dm=$dm asm_id=$asm_id"
@@ -972,14 +995,12 @@ function main() {
             copy_upper_to_stratum0
         fi
         read -p "TO START PRESS ANY KEY"
+        tag="brc-${RUN_ID}"
         message="${dm} index for assembly: ${asm_id}"
-        if $PUBLISH; then
-            publish_transaction "brc-${RUN_ID}" "$message"
-        else
-            abort_transaction "brc-${RUN_ID}" "$message"
-        fi
+        publish_or_abort "$tag" "$message"
     elif [ "${#MISSING_ASSEMBLY_LIST[@]}" -gt 0 ] || [ "${#MISSING_INDEX_LIST[@]}" -gt 0 ]; then
         log "Total ${#MISSING_ASSEMBLY_LIST[@]} assemblies missing"
+        log "Total ${#MISSING_INDEX_LIST[@]} indexes missing"
         setup_ephemeris
         setup_galaxy
         run_galaxy
@@ -989,6 +1010,8 @@ function main() {
         start_ssh_control
         setup_galaxy_maintenance_scripts
         local i=0
+        local j=0
+        local -a ran_ids
         if [ "${#MISSING_ASSEMBLY_LIST[@]}" -gt 0 ]; then
             for asm_id in "${MISSING_ASSEMBLY_LIST[@]}"; do
                 if $USE_LOCAL_OVERLAYFS; then
@@ -1020,19 +1043,56 @@ function main() {
                     begin_transaction 600
                     copy_upper_to_stratum0
                 fi
+                tag="brc-initial-${asm_id}"
                 message="Initial sequence and indexes for assembly: ${asm_id}"
-                if $PUBLISH; then
-                    publish_transaction "brc-initial-${asm_id}" "$message"
-                else
-                    abort_transaction "brc-initial-${asm_id}" "$message"
-                fi
+                publish_or_abort "$tag" "$message"
                 i=$((i + 1))
                 [ $NUM -eq 0 -o $i -lt $NUM ] || { log_exit "Exiting after ${i} assemblies as requested"; }
                 [ ! -f exit ] || { rm -f exit; log_exit "Exiting due to presence of exit file"; }
             done
         elif [ "${#MISSING_INDEX_LIST[@]}" -gt 0 ]; then
-            echo "NOT IMPLEMENTED"
-            exit 1
+            # TODO: parallelize, but it almost certainly wouldn't be safe to import multiple bundles of the same data table concurrently
+            for run_id in "${MISSING_INDEX_LIST[@]}"; do
+                log "Running indexer for run: ${run_id}"
+                dm="${run_id%%-*}"
+                asm_id="${run_id#*-}"
+                if ! $CVMFS_TRANSACTION_UP; then
+                    if $USE_LOCAL_OVERLAYFS; then
+                        [ ! -d "${OVERLAYFS_UPPER}/config" ] || clean_overlay
+                        update_tool_data_table_conf
+                    else
+                        begin_transaction 600
+                        exec_on mkdir -p "$IMPORT_TMPDIR"
+                    fi
+                fi
+                link_shared_to_cvmfs "$asm_id"
+                reload_data_tables 'all_fasta' '__dbkeys__'
+                generate_dm_config "$dm" "$asm_id"
+                run_dm_and_import "$dm" "$asm_id"
+                check_for_repo_changes
+                if ! $CVMFS_TRANSACTION_UP && $USE_LOCAL_OVERLAYFS; then
+                    begin_transaction 600
+                    copy_upper_to_stratum0
+                fi
+                i=$((i + 1))
+                j=$((j + 1))
+                ran_ids+=("$run_id")
+                if [ $BATCH -eq 0 -o $j -ge $BATCH -o $i -ge ${#MISSING_INDEX_LIST[@]} ]; then
+                    post_import
+                    if [ $BATCH -eq 0 ]; then
+                        tag="brc-${run_id}"
+                        message="Indexes for: ${run_id}"
+                    else
+                        tag="brc-batch-$(date '+%s' --utc)"
+                        message="Batch of $j indexes: ${ran_ids[@]}"
+                    fi
+                    publish_or_abort "$tag" "$message"
+                    j=0
+                    ran_ids=()
+                fi
+                [ $NUM -eq 0 -o $i -lt $NUM ] || { log_exit "Exiting after ${i} assemblies as requested"; }
+                [ ! -f exit ] || { rm -f exit; log_exit "Exiting due to presence of exit file"; }
+            done
         fi
         stop_ssh_control
         stop_galaxy
