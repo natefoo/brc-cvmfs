@@ -3,9 +3,16 @@ set -euo pipefail
 
 #export REPO='sandbox.galaxyproject.org'
 #export REPO_USER='sandbox'
-export REPO='brc.galaxyproject.org'
-export REPO_USER='brc'
+export REPO='data.galaxyproject.org'
+export REPO_USER='data'
+#export REPO='brc.galaxyproject.org'
+#export REPO_USER='brc'
 export REPO_STRATUM0='cvmfs0-psu0.galaxyproject.org'
+
+export CONFIG_DIR='byhand/location'
+export DATA_DIR='byhand'
+#CONFIG_DIR='config'
+#DATA_DIR='data'
 
 # Set this variable to 'true' to publish on successful installation
 : ${PUBLISH:=false}
@@ -53,7 +60,7 @@ INDEXER_LIST=(
 #    snpeff
 
 declare -rA INDEXER_LOC_LIST=(
-    ['fasta']='sam_fa_indices.loc'
+    ['fasta']='fasta_indexes.loc'
     ['bowtie1']='bowtie_indices.loc'
     ['bowtie2']='bowtie2_indices.loc'
     ['bwa_mem']='bwa_mem_index.loc'
@@ -109,6 +116,7 @@ export USE_LOCAL_OVERLAYFS=false
 # Ensure that everything is defined for set -u
 #
 
+ASSEMBLY_LIST_FILE=
 export SSH_MASTER_SOCKET=
 SSH_MASTER_SOCKET_CREATED=false
 OVERLAYFS_UPPER=
@@ -128,11 +136,15 @@ GALAXY_UP=false
 NUM=0
 BATCH=0
 RUN_ID=
+UCSC=false
 
-while getopts ":1b:pn:r:" opt; do
+while getopts ":1a:b:pn:r:u" opt; do
     case "$opt" in
         1)
             NUM=1
+            ;;
+        a)
+            ASSEMBLY_LIST_FILE="$OPTARG"
             ;;
         b)
             BATCH=$OPTARG
@@ -145,6 +157,9 @@ while getopts ":1b:pn:r:" opt; do
             ;;
         r)
             RUN_ID=$OPTARG
+            ;;
+        u)
+            UCSC=true
             ;;
         *)
             echo "usage: $0 [-1 (one assembly only, vasili aka -n1)] [-n (num of assemblies to do)] [-b (batch num runs in one transaction)] [-p (publish)]"
@@ -229,27 +244,36 @@ export -f exec_on
 
 
 function fetch_assembly_list() {
-    local line a
+    local asm_id dbkey sci_name com_name
+    local assembly_list_file
     # prefer refSeq IDs to genBank per Hiram
-    local assembly_list_file="$(basename "$ASSEMBLY_LIST_URL")"
-    if [ ! -f "$assembly_list_file" ] || ! $DEVMODE; then
-        log_exec curl -O "$ASSEMBLY_LIST_URL"
+    if [ -n "$ASSEMBLY_LIST_FILE" ]; then
+        assembly_list_file="$ASSEMBLY_LIST_FILE"
+    else
+        assembly_list_file="$(basename "$ASSEMBLY_LIST_URL")"
+        if [ ! -f "$assembly_list_file" ] || ! $DEVMODE; then
+            log_exec curl -O "$ASSEMBLY_LIST_URL"
+        fi
     fi
     #ASSEMBLY_LIST=( $(jq -cr '.data[] | (.refSeq // .genBank)' "$assembly_list_file" | LC_ALL=C sort) )
     # TODO: bash assoc arrays are not ordered (or rather, they are hash ordered), it would probably be better to put asm_ids in a normal array
-    while read line; do
-        # this forking is slow but otherwise we have to parse json in bash
-        IFS=$'\n'; a=($(echo "$line" | jq -r '.[]')); unset IFS
-        ASSEMBLY_LIST[${a[0]}]="${a[1]}"
-        ASSEMBLY_NAMES[${a[0]}]="${a[2]} (${a[1]})"
-    done < <(jq -cr '.data[] | [.asmId, (.refSeq // .genBank), .comName]' "$assembly_list_file")
+    while IFS=$'\t' read -r asm_id dbkey sci_name com_name; do
+        ASSEMBLY_LIST["$asm_id"]="$dbkey"
+        if $UCSC; then
+            ASSEMBLY_NAMES["$asm_id"]="$com_name"
+        else
+            ASSEMBLY_NAMES["$asm_id"]="$sci_name ($asm_id)"
+        fi
+    done < <(jq -cr '.data[] | [.asmId, (.refSeq // .genBank // .asmId), .sciName, .comName] | @tsv' "$assembly_list_file")
     log "Total ${#ASSEMBLY_LIST[@]} assemblies at UCSC"
+    declare -p ASSEMBLY_LIST
+    declare -p ASSEMBLY_NAMES
 }
 
 
 function detect_changes() {
     local asm_id dbkey skip do_skip loc dm run_id
-    readarray -t SKIP_LIST < "$SKIP_LIST_FILE"
+    [ -f "$SKIP_LIST_FILE" ] && readarray -t SKIP_LIST < "$SKIP_LIST_FILE"
     declare -p SKIP_LIST
     for asm_id in "${!ASSEMBLY_LIST[@]}"; do
         dbkey="${ASSEMBLY_LIST[$asm_id]}"
@@ -263,14 +287,14 @@ function detect_changes() {
         done
         $do_skip && continue
         #log_debug "Checking assembly: ${assembly}"
-        loc="${LOCAL_CVMFS_MOUNT}/config/all_fasta.loc"
+        loc="${LOCAL_CVMFS_MOUNT}/${CONFIG_DIR}/all_fasta.loc"
         if [ ! -f "$loc" ] || ! grep -Eq "^${dbkey}\s+" "$loc"; then
             log "Missing assembly: ${asm_id} (dbkey: ${dbkey})"
             MISSING_ASSEMBLY_LIST+=("$asm_id")
             #DM_INSTALL_LIST+=("fetch")
         else
             for dm in "${INDEXER_LIST[@]}"; do
-                loc="${LOCAL_CVMFS_MOUNT}/config/${INDEXER_LOC_LIST[$dm]}"
+                loc="${LOCAL_CVMFS_MOUNT}/${CONFIG_DIR}/${INDEXER_LOC_LIST[$dm]}"
                 if [ ! -f "$loc" ] || ! grep -Eq "^${dbkey}\s+" "$loc"; then
                     run_id="${dm}-${asm_id}"
                     log "Missing index: ${run_id} (dbkey: ${dbkey})"
@@ -299,7 +323,7 @@ function set_repo_vars() {
         OVERLAYFS_MOUNT="/cvmfs/${REPO}"
         LOCAL_CVMFS_MOUNT="${WORKDIR}/lower"
         CVMFS_CACHE="${WORKDIR}/cvmfs-cache"
-        IMPORT_TMPDIR="${OVERLAYFS_MOUNT}/data/_tmp"
+        IMPORT_TMPDIR="${OVERLAYFS_MOUNT}/${DATA_DIR}/_tmp"
     fi
 }
 
@@ -531,7 +555,14 @@ function setup_galaxy() {
     if [ ! -f "${galaxy}/config/shed_tool_conf.xml" ]; then
         log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" shed_tool_conf.xml > "${galaxy}/config/shed_tool_conf.xml"
     fi
-    log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" galaxy.yml > "${galaxy}/config/galaxy.yml"
+    if $UCSC; then
+        log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" \
+            -e "s%#builds_file_path:.*%builds_file_path: /cvmfs/data.galaxyproject.org/managed/location/builds.txt%" \
+            -e "s%#len_file_path:.*%len_file_path: /cvmfs/data.galaxyproject.org/managed/len/ucsc%" \
+            galaxy.yml > "${galaxy}/config/galaxy.yml"
+    else
+        log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" galaxy.yml > "${galaxy}/config/galaxy.yml"
+    fi
     log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" -e "s#REPO#${REPO}#g" tpv.yml > "${galaxy}/config/tpv.yml"
     log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" build_tool_data_table_conf.xml > "${galaxy}/config/tool_data_table_conf.xml"
     if [ ! -d "${galaxy}/.venv" ]; then
@@ -651,7 +682,7 @@ function generate_dm_config() {
     local fname="${DM_CONFIGS}/${dm}-${asm_id}.yaml"
     # TODO: this is a bit clumsy
     if [ -n "$RUN_ID" ]; then
-        local genome="/cvmfs/${REPO}/data/${dbkey}/seq/${dbkey}.fa"
+        local genome="/cvmfs/${REPO}/${DATA_DIR}/${dbkey}/seq/${dbkey}.fa"
     else
         local genome="${SHARED_ROOT}/tool-data/${dbkey}/seq/${dbkey}.fa"
     fi
@@ -660,15 +691,16 @@ function generate_dm_config() {
         fetch)
             local name=${ASSEMBLY_NAMES[$asm_id]}
             local url="$(ucsc_url "$asm_id" "$dbkey")"
-            # name is unquoted because it can contain internal single quotes, should always be a YAML string...
+            local source
+            $UCSC && source='existing' || source='new'
             cat >"${fname}" <<EOF
 data_managers:
   - id: $tool_id
     params:
-      - 'dbkey_source|dbkey_source_selector': 'new'
+      - 'dbkey_source|dbkey_source_selector': '$source'
       - 'dbkey_source|dbkey': '$dbkey'
-      - 'dbkey_source|dbkey_name': $name
-      - 'sequence_name': $name
+      - 'dbkey_source|dbkey_name': '$name'
+      - 'sequence_name': '$name'
       - 'reference_source|reference_source_selector': 'url'
       - 'reference_source|user_url': '$url'
 EOF
@@ -754,7 +786,7 @@ function update_tool_data_table_conf() {
     log "Checking for tool_data_table_conf.xml changes"
     if ! diff -u tool_data_table_conf.xml "${OVERLAYFS_MOUNT}/config/tool_data_table_conf.xml"; then
         log "Updating tool_data_table_conf.xml"
-        mkdir -p "${OVERLAYFS_MOUNT}/config"
+        mkdir -p "${OVERLAYFS_MOUNT}/${CONFIG_DIR}"
         log_exec cp tool_data_table_conf.xml "${OVERLAYFS_MOUNT}/config/tool_data_table_conf.xml"
     fi
 }
@@ -766,27 +798,27 @@ function import_tool_data_bundle() {
     local dm="$1"
     local asm_id="$2"
     local run_id="${dm}-${asm_id}"
-    local bundle_uri dataset_id
+    local bundle_uri dataset_id data_path
     log "Importing bundle for: $run_id"
     dataset_id="$(log_exec ${EPHEMERIS_BIN}/python3 get-bundle-url.py --galaxy-url "$GALAXY_URL" --history-name "brc-${run_id}" --galaxy-api-key="$GALAXY_USER_API_KEY")"
     [ -n "$dataset_id" ] || log_exit_error "Could not determine bundle URI!"
     bundle_uri="${GALAXY_URL}/api/datasets/${dataset_id}/display?to_ext=data_manager_json"
     log_debug "bundle URI is: $bundle_uri"
-    exec_on mkdir -p "${OVERLAYFS_MOUNT}/data"
+    exec_on mkdir -p "${OVERLAYFS_MOUNT}/${DATA_DIR}"
     if $USE_LOCAL_OVERLAYFS; then
-        #log_exec touch "${OVERLAYFS_MOUNT}/config/${INDEXER_LOC_LIST[$dm]}"
+        #log_exec touch "${OVERLAYFS_MOUNT}/${CONFIG_DIR}/${INDEXER_LOC_LIST[$dm]}"
         log_exec bwrap --bind / / \
             --dev-bind /dev /dev \
             --bind "$OVERLAYFS_MOUNT" "/cvmfs/${REPO}" -- \
                 ${GALAXY_MAINTENANCE_SCRIPTS_BIN}/galaxy-import-data-bundle \
-                    --tool-data-path "/cvmfs/${REPO}/data" \
-                    --data-table-config-path "/cvmfs/${REPO}/config/tool_data_table_conf.xml" \
+                    --tool-data-path "/cvmfs/${REPO}/${DATA_DIR}" \
+                    --data-table-config-path "/cvmfs/${REPO}/${CONFIG_DIR}/tool_data_table_conf.xml" \
                     "$bundle_uri"
     else
-        #exec_on touch "${OVERLAYFS_MOUNT}/config/${INDEXER_LOC_LIST[$dm]}"
+        #exec_on touch "${OVERLAYFS_MOUNT}/${CONFIG_DIR}/${INDEXER_LOC_LIST[$dm]}"
         exec_on TMPDIR=$IMPORT_TMPDIR ${GALAXY_MAINTENANCE_SCRIPTS_BIN}/galaxy-import-data-bundle \
-            --tool-data-path "/cvmfs/${REPO}/data" \
-            --data-table-config-path "/cvmfs/${REPO}/config/tool_data_table_conf.xml" \
+            --tool-data-path "/cvmfs/${REPO}/${DATA_DIR}" \
+            --data-table-config-path "/cvmfs/${REPO}/${CONFIG_DIR}/tool_data_table_conf.xml" \
             "$bundle_uri"
     fi
     if [ "$dm" == 'fetch' ]; then
@@ -812,11 +844,15 @@ function post_import_fetch_dm() {
         "${SHARED_ROOT}/tool-data/${dbkey}/len"
     log_exec test -f "${file_name/.dat/_files}/${dbkey}.fa"
     log_exec ln "${file_name/.dat/_files}/${dbkey}.fa" "${SHARED_ROOT}/tool-data/${dbkey}/seq/${dbkey}.fa"
-    log_exec test -f "${file_name/.dat/_files}/${dbkey}.len"
-    log_exec ln "${file_name/.dat/_files}/${dbkey}.len" "${SHARED_ROOT}/tool-data/${dbkey}/len/${dbkey}.len"
+    if ! $UCSC; then
+        log_exec test -f "${file_name/.dat/_files}/${dbkey}.len"
+        log_exec ln "${file_name/.dat/_files}/${dbkey}.len" "${SHARED_ROOT}/tool-data/${dbkey}/len/${dbkey}.len"
+    fi
     log "Updating loc files for indexers"
-    exec_on tail -1 "${OVERLAYFS_MOUNT}/config/all_fasta.loc" | sed "s#/cvmfs/${REPO}/data#${SHARED_ROOT}/tool-data#" > "${SHARED_ROOT}/tool-data/config/all_fasta.loc"
-    exec_on tail -1 "${OVERLAYFS_MOUNT}/config/dbkeys.loc" | sed "s#/cvmfs/${REPO}/data#${SHARED_ROOT}/tool-data#" > "${SHARED_ROOT}/tool-data/config/dbkeys.loc"
+    exec_on tail -1 "${OVERLAYFS_MOUNT}/${CONFIG_DIR}/all_fasta.loc" | sed "s#/cvmfs/${REPO}/${DATA_DIR}#${SHARED_ROOT}/tool-data#" > "${SHARED_ROOT}/tool-data/config/all_fasta.loc"
+    if ! $UCSC; then
+        exec_on tail -1 "${OVERLAYFS_MOUNT}/${CONFIG_DIR}/dbkeys.loc" | sed "s#/cvmfs/${REPO}/${DATA_DIR}#${SHARED_ROOT}/tool-data#" > "${SHARED_ROOT}/tool-data/config/dbkeys.loc"
+    fi
     log_exec cat "${SHARED_ROOT}"/tool-data/config/*.loc
 }
 
@@ -826,12 +862,12 @@ function fetch_twobit() {
     local dbkey=${ASSEMBLY_LIST[$asm_id]}
     # there is no "download twobit" DM and there is little harm in doing it this way
     local name=${ASSEMBLY_NAMES[$asm_id]}
-    local path="/cvmfs/${REPO}/data/${dbkey}/seq/${dbkey}.2bit"
+    local path="/cvmfs/${REPO}/${DATA_DIR}/${dbkey}/seq/${dbkey}.2bit"
     log "Fetching UCSC 2bit to ${path}"
-    exec_on curl -o "${OVERLAYFS_MOUNT}/data/${dbkey}/seq/${dbkey}.2bit" "$(ucsc_url "$asm_id" "$dbkey" '2bit')"
-    printf '%s\t%s\n' "$dbkey" "$path" | exec_on tee -a "${OVERLAYFS_MOUNT}/config/twobit.loc"
-    printf '%s\t%s\t%s\n' "$dbkey" "$name" "$path" | exec_on tee -a "${OVERLAYFS_MOUNT}/config/lastz_seqs.loc"
-    exec_on ls -lh "${OVERLAYFS_MOUNT}/data/${dbkey}/seq/"
+    exec_on curl -o "${OVERLAYFS_MOUNT}/${DATA_DIR}/${dbkey}/seq/${dbkey}.2bit" "$(ucsc_url "$asm_id" "$dbkey" '2bit')"
+    printf '%s\t%s\n' "$dbkey" "$path" | exec_on tee -a "${OVERLAYFS_MOUNT}/${CONFIG_DIR}/twobit.loc"
+    printf '%s\t%s\t%s\n' "$dbkey" "$name" "$path" | exec_on tee -a "${OVERLAYFS_MOUNT}/${CONFIG_DIR}/lastz_seqs.loc"
+    exec_on ls -lh "${OVERLAYFS_MOUNT}/${DATA_DIR}/${dbkey}/seq/"
 }
 
 
@@ -844,10 +880,10 @@ function link_shared_to_cvmfs() {
     log_exec mkdir -p "${SHARED_ROOT}/tool-data/config" \
         "${SHARED_ROOT}/tool-data/${dbkey}/seq" \
         "${SHARED_ROOT}/tool-data/${dbkey}/len"
-    log_exec test -f "/cvmfs/${REPO}/data/${dbkey}/seq/${dbkey}.fa"
-    log_exec grep "^${dbkey}"$'\t' "/cvmfs/$REPO/config/all_fasta.loc" | tee "${SHARED_ROOT}/tool-data/config/all_fasta.loc"
-    log_exec test -f "/cvmfs/${REPO}/data/${dbkey}/len/${dbkey}.len"
-    log_exec grep "^${dbkey}"$'\t' "/cvmfs/$REPO/config/dbkeys.loc" | tee "${SHARED_ROOT}/tool-data/config/dbkeys.loc"
+    log_exec test -f "/cvmfs/${REPO}/${DATA_DIR}/${dbkey}/seq/${dbkey}.fa"
+    log_exec grep "^${dbkey}"$'\t' "/cvmfs/$REPO/${CONFIG_DIR}/all_fasta.loc" | tee "${SHARED_ROOT}/tool-data/config/all_fasta.loc"
+    log_exec test -f "/cvmfs/${REPO}/${DATA_DIR}/${dbkey}/len/${dbkey}.len"
+    log_exec grep "^${dbkey}"$'\t' "/cvmfs/$REPO/${CONFIG_DIR}/dbkeys.loc" | tee "${SHARED_ROOT}/tool-data/config/dbkeys.loc"
 }
 
 
@@ -889,16 +925,16 @@ function check_for_repo_changes() {
     exec_on rm -rf "$IMPORT_TMPDIR"
     log "Contents of OverlayFS upper mount (will be published)"
     exec_on tree "$OVERLAYFS_UPPER"
-    mapfile -t configs < <(exec_on compgen -G "'${OVERLAYFS_UPPER}/config/*'")
+    mapfile -t configs < <(exec_on compgen -G "'${OVERLAYFS_UPPER}/${CONFIG_DIR}/*'")
     for config in ${configs[@]}; do
         log "Checking diff: $config"
-        lower="${OVERLAYFS_LOWER}/config/${config##*/}"
+        lower="${OVERLAYFS_LOWER}/${CONFIG_DIR}/${config##*/}"
         exec_on test -f "$lower" || lower=/dev/null
         # not ideal that we consider a single config change as successful but
         exec_on diff -u "$lower" "$config" || { changes=true; }
     done
     if ! $changes; then
-        log_exit_error "Terminating build: expected changes to ${OVERLAYFS_UPPER}/config/* not found!"
+        log_exit_error "Terminating build: expected changes to ${OVERLAYFS_UPPER}/${CONFIG_DIR}/* not found!"
     fi
 }
 
@@ -916,7 +952,7 @@ function verify_locs() {
     local loc
     local lastloc='_init_'
     declare -a locs
-    mapfile -t locs < <(exec_on compgen -G "'${OVERLAYFS_MOUNT}/config/*.loc'")
+    mapfile -t locs < <(exec_on compgen -G "'${OVERLAYFS_MOUNT}/${CONFIG_DIR}/*.loc'")
     log "Verifying all locs have matching first column"
     for loc in ${locs[@]}; do
         log_debug "$loc"
@@ -956,6 +992,77 @@ function publish_or_abort() {
 }
 
 
+function do_genome_run() {
+    local dm="$1"
+    local asm_id="$2"
+    link_shared_to_cvmfs "$asm_id"
+    run_galaxy
+    create_brc_user
+    . "${EPHEMERIS_BIN}/activate"
+    install_data_manager "$dm"
+    deactivate
+    start_ssh_control
+    setup_galaxy_maintenance_scripts
+    if $USE_LOCAL_OVERLAYFS; then
+        mount_overlay_cvmfs
+    else
+        begin_transaction 600
+        exec_on mkdir -p "$IMPORT_TMPDIR"
+    fi
+    # this is not necessary but does confirm they are loaded
+    reload_data_tables 'all_fasta' '__dbkeys__'
+    generate_dm_config "$dm" "$asm_id"
+    run_dm_and_import "$dm" "$asm_id"
+}
+
+
+function do_kraken2_run() {
+    local db_type="${1%%-*}"
+    local db_id="${1#*-}"
+    local dm="kraken2"
+    local run_id="${dm}-${db_type}-${db_id}"
+    local fname="${DM_CONFIGS}/${run_id}.yaml"
+    DM_TOOL_IDS['kraken2']='testtoolshed.g2.bx.psu.edu/repos/nate/data_manager_build_kraken2_database/kraken2_build_database/2.1.3+galaxy3'
+    local tool_id="${DM_TOOL_IDS['kraken2']}"
+    run_galaxy
+    create_brc_user
+    . "${EPHEMERIS_BIN}/activate"
+    # https://github.com/galaxyproject/tools-iuc/pull/6536
+    #install_data_manager "$dm"
+    log_exec shed-tools install -g "$GALAXY_URL" -a "$GALAXY_ADMIN_API_KEY" \
+        --skip_install_resolver_dependencies \
+        --skip_install_repository_dependencies \
+        --owner "nate" \
+        --name "data_manager_build_kraken2_database" \
+        --tool-shed "https://testtoolshed.g2.bx.psu.edu"
+    deactivate
+    start_ssh_control
+    setup_galaxy_maintenance_scripts
+    if $USE_LOCAL_OVERLAYFS; then
+        mount_overlay_cvmfs
+    else
+        begin_transaction 600
+        exec_on mkdir -p "$IMPORT_TMPDIR"
+    fi
+    log "Writing ${fname}"
+    case "$db_type" in
+        special_prebuilt)
+            cat >"${fname}" <<EOF
+data_managers:
+  - id: $tool_id
+    params:
+      - 'database_type|database_type': 'special_prebuilt'
+      - 'database_type|special_prebuild|special_prebuilt_db': 'eupathdb48_20230407'
+EOF
+            ;;
+        *)
+            log_exit_error "NOT IMPLEMENTED"
+            ;;
+    esac
+    run_dm_and_import "$dm" "$1"  # $1 = "$asm_id"
+}
+
+
 function main() {
     local dm run_id asm_id tag message
     set_repo_vars
@@ -970,31 +1077,18 @@ function main() {
         log_debug "dm=$dm asm_id=$asm_id"
         setup_ephemeris
         setup_galaxy
-        link_shared_to_cvmfs "$asm_id"
-        run_galaxy
-        create_brc_user
-        . "${EPHEMERIS_BIN}/activate"
-        install_data_manager "$dm"
-        deactivate
-        start_ssh_control
-        setup_galaxy_maintenance_scripts
-        if $USE_LOCAL_OVERLAYFS; then
-            mount_overlay_cvmfs
+        if [[ $dm == 'kraken2' ]]; then
+            do_kraken2_run "$asm_id"
         else
-            begin_transaction 600
-            exec_on mkdir -p "$IMPORT_TMPDIR"
+            do_genome_run "$dm" "$asm_id"
         fi
-        # this is not necessary but does confirm they are loaded
-        reload_data_tables 'all_fasta' '__dbkeys__'
-        generate_dm_config "$dm" "$asm_id"
-        run_dm_and_import "$dm" "$asm_id"
         check_for_repo_changes
         post_import
         if $USE_LOCAL_OVERLAYFS; then
             begin_transaction 600
             copy_upper_to_stratum0
         fi
-        read -p "TO START PRESS ANY KEY"
+        #read -p "TO START PRESS ANY KEY"
         tag="brc-${RUN_ID}"
         message="${dm} index for assembly: ${asm_id}"
         publish_or_abort "$tag" "$message"
@@ -1037,7 +1131,7 @@ function main() {
                 #    import_tool_data_bundle "$indexer" "$asm_id"
                 #done
                 check_for_repo_changes
-                verify_locs
+                #verify_locs
                 post_import
                 if $USE_LOCAL_OVERLAYFS; then
                     begin_transaction 600
