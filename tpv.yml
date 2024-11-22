@@ -34,44 +34,27 @@ tools:
     abstract: true
     cores: 1
     mem: 16
-  .*/sam_fasta_index_builder/.*:
-    mem: 4
+  .*data_manager.*:
     scheduling:
       require:
         - singularity
+  .*/sam_fasta_index_builder/.*:
+    mem: 4
   .*/bowtie_index_builder_data_manager/.*:
     params:
       container_override:
       - type: singularity
         shell: /bin/sh
         identifier: /cvmfs/singularity.galaxyproject.org/all/bowtie:1.2.0--py36_0
-    scheduling:
-      require:
-        - singularity
-  .*/bowtie2_index_builder_data_manager/.*:
-    scheduling:
-      require:
-        - singularity
+  #.*/bowtie2_index_builder_data_manager/.*:
   .*/bwa_mem_index_builder_data_manager/.*:
     mem: 32
-    scheduling:
-      require:
-        - singularity
   .*/bwa_mem2_index_builder_data_manager/.*:
     mem: 112
-    scheduling:
-      require:
-        - singularity
   .*/rna_star_index_builder_data_manager/.*:
     cores: 16
     mem: 112
-    scheduling:
-      require:
-        - singularity
-  .*/hisat2_index_builder_data_manager/.*:
-    scheduling:
-      require:
-        - singularity
+  #.*/hisat2_index_builder_data_manager/.*:
   .*/kraken2_build_database/.*:
     scheduling:
       require:

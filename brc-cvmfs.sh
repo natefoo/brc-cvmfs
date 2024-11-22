@@ -78,9 +78,13 @@ declare -rA DM_LIST=(
     ['bwa_mem2']='iuc/data_manager_bwa_mem2_index_builder/bwa_mem2_index_builder_data_manager'
     ['star']='iuc/data_manager_star_index_builder/rna_star_index_builder_data_manager'
     ['hisat2']='iuc/data_manager_hisat2_index_builder/hisat2_index_builder_data_manager'
+    ['funannotate']='iuc/data_manager_funannotate/data_manager_funannotate'
 )
 
-declare -A DM_TOOL_IDS
+# https://github.com/galaxyproject/tools-iuc/pull/6536
+declare -A DM_TOOL_IDS=(
+    ['kraken2']='testtoolshed.g2.bx.psu.edu/repos/nate/data_manager_build_kraken2_database/kraken2_build_database/2.1.3+galaxy3'
+)
 
 export DM_CONFIGS="${WORKDIR}/dm_configs"
 
@@ -137,8 +141,9 @@ NUM=0
 BATCH=0
 RUN_ID=
 UCSC=false
+IMPORT_ONLY=false
 
-while getopts ":1a:b:pn:r:u" opt; do
+while getopts ":1a:b:ipn:r:u" opt; do
     case "$opt" in
         1)
             NUM=1
@@ -148,6 +153,9 @@ while getopts ":1a:b:pn:r:u" opt; do
             ;;
         b)
             BATCH=$OPTARG
+            ;;
+        i)
+            IMPORT_ONLY=true
             ;;
         n)
             NUM=$OPTARG
@@ -266,8 +274,8 @@ function fetch_assembly_list() {
         fi
     done < <(jq -cr '.data[] | [.asmId, (.refSeq // .genBank // .asmId), .sciName, .comName] | @tsv' "$assembly_list_file")
     log "Total ${#ASSEMBLY_LIST[@]} assemblies at UCSC"
-    declare -p ASSEMBLY_LIST
-    declare -p ASSEMBLY_NAMES
+    #declare -p ASSEMBLY_LIST
+    #declare -p ASSEMBLY_NAMES
 }
 
 
@@ -674,22 +682,34 @@ function generate_indexer_data_manager_configs() {
 }
 
 
+function asm_id_to_dbkey() {
+    local asm_id="$1"
+    echo "${ASSEMBLY_LIST[$asm_id]}"
+}
+
+
+function dbkey_to_genome_file() {
+    local dbkey="$1"
+    # TODO: this is a bit clumsy
+    if [ -n "$RUN_ID" ]; then
+        echo "/cvmfs/${REPO}/${DATA_DIR}/${dbkey}/seq/${dbkey}.fa"
+    else
+        echo "${SHARED_ROOT}/tool-data/${dbkey}/seq/${dbkey}.fa"
+    fi
+}
+
+
 function generate_dm_config() {
     local dm="$1"
     local asm_id="$2"
-    local dbkey=${ASSEMBLY_LIST[$asm_id]}
     local tool_id=${DM_TOOL_IDS[$dm]}
     local fname="${DM_CONFIGS}/${dm}-${asm_id}.yaml"
-    # TODO: this is a bit clumsy
-    if [ -n "$RUN_ID" ]; then
-        local genome="/cvmfs/${REPO}/${DATA_DIR}/${dbkey}/seq/${dbkey}.fa"
-    else
-        local genome="${SHARED_ROOT}/tool-data/${dbkey}/seq/${dbkey}.fa"
-    fi
+    local dbkey genome
     log "Writing ${fname}"
     case "$dm" in
         fetch)
             local name=${ASSEMBLY_NAMES[$asm_id]}
+            local dbkey="$(asm_id_to_dbkey "$asm_id")"
             local url="$(ucsc_url "$asm_id" "$dbkey")"
             local source
             $UCSC && source='existing' || source='new'
@@ -706,6 +726,8 @@ data_managers:
 EOF
             ;;
         star)
+            local dbkey="$(asm_id_to_dbkey "$asm_id")"
+            local genome="$(dbkey_to_genome_file "$dbkey")"
             local nbases="$(grep -v '^>' "$genome" | tr -d '\n' | wc -c)"
             local nseqs="$(grep -c '>' "$genome")"
             local saindex_nbases=$(python -c "import math; print(min(14, int(math.log2(${nbases})/2 - 1)))")
@@ -721,6 +743,8 @@ data_managers:
 EOF
             ;;
         bwa-mem)
+            local dbkey="$(asm_id_to_dbkey "$asm_id")"
+            local genome="$(dbkey_to_genome_file "$dbkey")"
             local alg='is'
             local size="$(stat -c %s "$genome")"
             [ -n "$size" ] || log_exit_error "Failed to stat: ${genome}"
@@ -738,7 +762,33 @@ data_managers:
       - 'index_algorithm': '$alg'
 EOF
             ;;
+        kraken2)
+            local db_type="${asm_id%%-*}"
+            local db_id="${asm_id#*-}"
+            case "$db_type" in
+                special_prebuilt)
+                    cat >"${fname}" <<EOF
+data_managers:
+  - id: $tool_id
+    params:
+      - 'database_type|database_type': '${db_type}'
+      - 'database_type|special_prebuild|special_prebuilt_db': '${db_name}'
+EOF
+                    ;;
+                *)
+                    log_exit_error "NOT IMPLEMENTED"
+                    ;;
+            esac
+            ;;
+        funannotate)
+            cat >"${fname}" <<EOF
+data_managers:
+  - id: $tool_id
+    params: []
+EOF
+            ;;
         *)
+            local dbkey="$(asm_id_to_dbkey "$asm_id")"
             cat >"${fname}" <<EOF
 data_managers:
   - id: $tool_id
@@ -890,7 +940,9 @@ function link_shared_to_cvmfs() {
 function run_dm_and_import() {
     local indexer="$1"
     local asm_id="$2"
-    run_data_manager "$indexer" "$asm_id"
+    if ! $IMPORT_ONLY; then
+        run_data_manager "$indexer" "$asm_id"
+    fi
     import_tool_data_bundle "$indexer" "$asm_id"
 }
 export -f run_dm_and_import
@@ -998,9 +1050,11 @@ function do_genome_run() {
     link_shared_to_cvmfs "$asm_id"
     run_galaxy
     create_brc_user
-    . "${EPHEMERIS_BIN}/activate"
-    install_data_manager "$dm"
-    deactivate
+    if ! $IMPORT_ONLY; then
+        . "${EPHEMERIS_BIN}/activate"
+        install_data_manager "$dm"
+        deactivate
+    fi
     start_ssh_control
     setup_galaxy_maintenance_scripts
     if $USE_LOCAL_OVERLAYFS; then
@@ -1011,31 +1065,37 @@ function do_genome_run() {
     fi
     # this is not necessary but does confirm they are loaded
     reload_data_tables 'all_fasta' '__dbkeys__'
-    generate_dm_config "$dm" "$asm_id"
+    $IMPORT_ONLY || generate_dm_config "$dm" "$asm_id"
     run_dm_and_import "$dm" "$asm_id"
 }
 
 
-function do_kraken2_run() {
-    local db_type="${1%%-*}"
-    local db_id="${1#*-}"
-    local dm="kraken2"
-    local run_id="${dm}-${db_type}-${db_id}"
-    local fname="${DM_CONFIGS}/${run_id}.yaml"
-    DM_TOOL_IDS['kraken2']='testtoolshed.g2.bx.psu.edu/repos/nate/data_manager_build_kraken2_database/kraken2_build_database/2.1.3+galaxy3'
-    local tool_id="${DM_TOOL_IDS['kraken2']}"
+function do_non_genome_run() {
+    local dm="$1"
+    local asm_id="$2"  # this isn't really an asm_id in the non-genome context
+    local run_id="${dm}-${asm_id}"
+    local tool_id
     run_galaxy
     create_brc_user
-    . "${EPHEMERIS_BIN}/activate"
-    # https://github.com/galaxyproject/tools-iuc/pull/6536
-    #install_data_manager "$dm"
-    log_exec shed-tools install -g "$GALAXY_URL" -a "$GALAXY_ADMIN_API_KEY" \
-        --skip_install_resolver_dependencies \
-        --skip_install_repository_dependencies \
-        --owner "nate" \
-        --name "data_manager_build_kraken2_database" \
-        --tool-shed "https://testtoolshed.g2.bx.psu.edu"
-    deactivate
+    if ! $IMPORT_ONLY; then
+        . "${EPHEMERIS_BIN}/activate"
+        case "$dm" in
+            kraken2)
+                tool_id="${DM_TOOL_IDS[$dm]}"
+                # https://github.com/galaxyproject/tools-iuc/pull/6536
+                log_exec shed-tools install -g "$GALAXY_URL" -a "$GALAXY_ADMIN_API_KEY" \
+                    --skip_install_resolver_dependencies \
+                    --skip_install_repository_dependencies \
+                    --owner "nate" \
+                    --name "data_manager_build_kraken2_database" \
+                    --tool-shed "https://testtoolshed.g2.bx.psu.edu"
+                ;;
+            *)
+                install_data_manager "$dm"
+                ;;
+        esac
+        deactivate
+    fi
     start_ssh_control
     setup_galaxy_maintenance_scripts
     if $USE_LOCAL_OVERLAYFS; then
@@ -1044,22 +1104,8 @@ function do_kraken2_run() {
         begin_transaction 600
         exec_on mkdir -p "$IMPORT_TMPDIR"
     fi
-    log "Writing ${fname}"
-    case "$db_type" in
-        special_prebuilt)
-            cat >"${fname}" <<EOF
-data_managers:
-  - id: $tool_id
-    params:
-      - 'database_type|database_type': 'special_prebuilt'
-      - 'database_type|special_prebuild|special_prebuilt_db': 'eupathdb48_20230407'
-EOF
-            ;;
-        *)
-            log_exit_error "NOT IMPLEMENTED"
-            ;;
-    esac
-    run_dm_and_import "$dm" "$1"  # $1 = "$asm_id"
+    $IMPORT_ONLY || generate_dm_config "$dm" "$asm_id"
+    run_dm_and_import "$dm" "$asm_id"
 }
 
 
@@ -1068,7 +1114,7 @@ function main() {
     set_repo_vars
     fetch_assembly_list
     mount_overlay_cvmfs
-    detect_changes
+    [ -n "$RUN_ID" ] || detect_changes
     if [ -n "$RUN_ID" ]; then
         dm="${RUN_ID%%-*}"
         asm_id="${RUN_ID#*-}"
@@ -1077,11 +1123,14 @@ function main() {
         log_debug "dm=$dm asm_id=$asm_id"
         setup_ephemeris
         setup_galaxy
-        if [[ $dm == 'kraken2' ]]; then
-            do_kraken2_run "$asm_id"
-        else
-            do_genome_run "$dm" "$asm_id"
-        fi
+        case "$dm" in
+            kraken2|funannotate)
+                do_non_genome_run "$dm" "$asm_id"
+                ;;
+            *)
+                do_genome_run "$dm" "$asm_id"
+                ;;
+        esac
         check_for_repo_changes
         post_import
         if $USE_LOCAL_OVERLAYFS; then
