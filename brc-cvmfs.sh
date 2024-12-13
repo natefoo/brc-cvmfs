@@ -141,7 +141,7 @@ NUM=0
 BATCH=0
 RUN_ID=
 UCSC=false
-IMPORT_ONLY=false
+export IMPORT_ONLY=false
 
 while getopts ":1a:b:ipn:r:u" opt; do
     case "$opt" in
