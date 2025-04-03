@@ -13,6 +13,7 @@ galaxy:
   admin_users: brc@galaxyproject.org
   bootstrap_admin_api_key: c0ffee
   conda_auto_init: false
+  conda_prefix: SHARED_ROOT/conda
   file_path: SHARED_ROOT/objects
   job_working_directory: SHARED_ROOT/jobs
   #builds_file_path: null

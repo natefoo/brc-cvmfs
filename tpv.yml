@@ -59,3 +59,10 @@ tools:
     scheduling:
       require:
         - singularity
+  .*/checkm2_build_database/.*:
+    params:
+      dependency_resolvers:
+        - type: conda
+    #scheduling:
+    #  require:
+    #    - singularity

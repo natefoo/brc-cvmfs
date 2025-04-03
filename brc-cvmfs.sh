@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-#export REPO='sandbox.galaxyproject.org'
-#export REPO_USER='sandbox'
-export REPO='data.galaxyproject.org'
-export REPO_USER='data'
-#export REPO='brc.galaxyproject.org'
-#export REPO_USER='brc'
 export REPO_STRATUM0='cvmfs0-psu0.galaxyproject.org'
 
+#export REPO='sandbox.galaxyproject.org'
+#export REPO_USER='sandbox'
+
+#export REPO='brc.galaxyproject.org'
+#export REPO_USER='brc'
+#export CONFIG_DIR='config'
+#export DATA_DIR='data'
+
+export REPO='data.galaxyproject.org'
+export REPO_USER='data'
 export CONFIG_DIR='byhand/location'
 export DATA_DIR='byhand'
-#CONFIG_DIR='config'
-#DATA_DIR='data'
 
 # Set this variable to 'true' to publish on successful installation
 : ${PUBLISH:=false}
@@ -79,12 +81,15 @@ declare -rA DM_LIST=(
     ['star']='iuc/data_manager_star_index_builder/rna_star_index_builder_data_manager'
     ['hisat2']='iuc/data_manager_hisat2_index_builder/hisat2_index_builder_data_manager'
     ['funannotate']='iuc/data_manager_funannotate/data_manager_funannotate'
+    ['kraken2']='iuc/data_manager_build_kraken2_database/kraken2_build_database'
+    ['checkm2']='iuc/checkm2_build_database/checkm2_build_database'
 )
 
 # https://github.com/galaxyproject/tools-iuc/pull/6536
 declare -A DM_TOOL_IDS=(
-    ['kraken2']='testtoolshed.g2.bx.psu.edu/repos/nate/data_manager_build_kraken2_database/kraken2_build_database/2.1.3+galaxy3'
 )
+#    ['kraken2']='testtoolshed.g2.bx.psu.edu/repos/nate/data_manager_build_kraken2_database/kraken2_build_database/2.1.3+galaxy5'
+#)
 
 export DM_CONFIGS="${WORKDIR}/dm_configs"
 
@@ -103,7 +108,8 @@ GALAXY_ADMIN_API_KEY='c0ffee'
 export GALAXY_USER_API_KEY=
 
 EPHEMERIS="git+https://github.com/mvdbeek/ephemeris.git@dm_parameters#egg_name=ephemeris"
-GALAXY_MAINTENANCE_SCRIPTS="git+https://github.com/mvdbeek/galaxy-maintenance-scripts.git@avoid_galaxy_app#egg_name=galaxy-maintenance-scripts"
+#GALAXY_MAINTENANCE_SCRIPTS="git+https://github.com/mvdbeek/galaxy-maintenance-scripts.git@avoid_galaxy_app#egg_name=galaxy-maintenance-scripts"
+GALAXY_MAINTENANCE_SCRIPTS="git+https://github.com/natefoo/galaxy-maintenance-scripts.git@import-retry#egg_name=galaxy-maintenance-scripts"
 
 #SSH_MASTER_SOCKET_DIR="${HOME}/.cache/brc"
 SSH_MASTER_SOCKET_DIR="$(pwd)"
@@ -178,6 +184,7 @@ done
 
 
 function trap_handler() {
+    echo "Entered trap handler at $(date)"
     { set +x; } 2>/dev/null
     # return to original dir
     while popd 2>/dev/null; do :; done || true
@@ -764,15 +771,28 @@ EOF
             ;;
         kraken2)
             local db_type="${asm_id%%-*}"
-            local db_id="${asm_id#*-}"
             case "$db_type" in
                 special_prebuilt)
+                    local db_id="${asm_id#*-}"
                     cat >"${fname}" <<EOF
 data_managers:
   - id: $tool_id
     params:
       - 'database_type|database_type': '${db_type}'
-      - 'database_type|special_prebuild|special_prebuilt_db': '${db_name}'
+      - 'database_type|special_prebuild|special_prebuilt_db': '${db_id}'
+EOF
+                    ;;
+                standard_prebuilt)
+                    local _t="${asm_id#*-}"
+                    local db_id="${_t%%-*}"
+                    local db_date="${_t#*-}"
+                    cat >"${fname}" <<EOF
+data_managers:
+  - id: $tool_id
+    params:
+      - 'database_type|database_type': '${db_type}'
+      - 'database_type|prebuild|prebuilt_db': '${db_id}'
+      - 'database_type|prebuild|prebuilt_date': '${db_date}'
 EOF
                     ;;
                 *)
@@ -780,7 +800,7 @@ EOF
                     ;;
             esac
             ;;
-        funannotate)
+        funannotate|checkm2)
             cat >"${fname}" <<EOF
 data_managers:
   - id: $tool_id
@@ -855,6 +875,7 @@ function import_tool_data_bundle() {
     bundle_uri="${GALAXY_URL}/api/datasets/${dataset_id}/display?to_ext=data_manager_json"
     log_debug "bundle URI is: $bundle_uri"
     exec_on mkdir -p "${OVERLAYFS_MOUNT}/${DATA_DIR}"
+    log_debug "Beginning import at $(date)"
     if $USE_LOCAL_OVERLAYFS; then
         #log_exec touch "${OVERLAYFS_MOUNT}/${CONFIG_DIR}/${INDEXER_LOC_LIST[$dm]}"
         log_exec bwrap --bind / / \
@@ -871,6 +892,7 @@ function import_tool_data_bundle() {
             --data-table-config-path "/cvmfs/${REPO}/${CONFIG_DIR}/tool_data_table_conf.xml" \
             "$bundle_uri"
     fi
+    log_debug "Finished import at $(date)"
     if [ "$dm" == 'fetch' ]; then
         post_import_fetch_dm "$asm_id" "$dataset_id"
         fetch_twobit "$asm_id"
@@ -1080,16 +1102,16 @@ function do_non_genome_run() {
     if ! $IMPORT_ONLY; then
         . "${EPHEMERIS_BIN}/activate"
         case "$dm" in
-            kraken2)
-                tool_id="${DM_TOOL_IDS[$dm]}"
-                # https://github.com/galaxyproject/tools-iuc/pull/6536
-                log_exec shed-tools install -g "$GALAXY_URL" -a "$GALAXY_ADMIN_API_KEY" \
-                    --skip_install_resolver_dependencies \
-                    --skip_install_repository_dependencies \
-                    --owner "nate" \
-                    --name "data_manager_build_kraken2_database" \
-                    --tool-shed "https://testtoolshed.g2.bx.psu.edu"
-                ;;
+            #kraken2)
+            #    tool_id="${DM_TOOL_IDS[$dm]}"
+            #    # 
+            #    log_exec shed-tools install -g "$GALAXY_URL" -a "$GALAXY_ADMIN_API_KEY" \
+            #        --skip_install_resolver_dependencies \
+            #        --skip_install_repository_dependencies \
+            #        --owner "nate" \
+            #        --name "data_manager_build_kraken2_database" \
+            #        --tool-shed "https://testtoolshed.g2.bx.psu.edu"
+            #    ;;
             *)
                 install_data_manager "$dm"
                 ;;
@@ -1124,7 +1146,7 @@ function main() {
         setup_ephemeris
         setup_galaxy
         case "$dm" in
-            kraken2|funannotate)
+            kraken2|funannotate|checkm2)
                 do_non_genome_run "$dm" "$asm_id"
                 ;;
             *)
