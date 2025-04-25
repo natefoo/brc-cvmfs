@@ -66,3 +66,7 @@ tools:
     #scheduling:
     #  require:
     #    - singularity
+  .*/busco_fetcher_options/.*:
+    scheduling:
+      require:
+        - singularity

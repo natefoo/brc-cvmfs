@@ -7,4 +7,12 @@
         <columns>value, dbkey, name, path</columns>
         <file path="SHARED_ROOT/tool-data/config/all_fasta.loc" />
     </table>
+    <table name="all_fasta" comment_char="#">
+        <columns>value, dbkey, name, path</columns>
+        <file path="SHARED_ROOT/tool-data/config/all_fasta.loc" />
+    </table>
+    <table name="busco_database" comment_char="#">
+        <columns>value, name, version, path</columns>
+        <file path="SHARED_ROOT/tool-data/config/busco_database.loc" />
+    </table>
 </tables>

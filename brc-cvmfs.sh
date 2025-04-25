@@ -83,6 +83,9 @@ declare -rA DM_LIST=(
     ['funannotate']='iuc/data_manager_funannotate/data_manager_funannotate'
     ['kraken2']='iuc/data_manager_build_kraken2_database/kraken2_build_database'
     ['checkm2']='iuc/checkm2_build_database/checkm2_build_database'
+    ['staramr']='iuc/data_manager_build_staramr/data_manager_build_staramr'
+    ['salmon']='iuc/data_manager_salmon_index_builder/salmon_index_builder_data_manager'
+    ['busco_options']='iuc/data_manager_fetch_busco/busco_fetcher_options'
 )
 
 # https://github.com/galaxyproject/tools-iuc/pull/6536
@@ -146,10 +149,11 @@ GALAXY_UP=false
 NUM=0
 BATCH=0
 RUN_ID=
+DBKEY=
 UCSC=false
 export IMPORT_ONLY=false
 
-while getopts ":1a:b:ipn:r:u" opt; do
+while getopts ":1a:b:d:ipn:r:u" opt; do
     case "$opt" in
         1)
             NUM=1
@@ -159,6 +163,9 @@ while getopts ":1a:b:ipn:r:u" opt; do
             ;;
         b)
             BATCH=$OPTARG
+            ;;
+        d)
+            DBKEY=$OPTARG
             ;;
         i)
             IMPORT_ONLY=true
@@ -800,11 +807,49 @@ EOF
                     ;;
             esac
             ;;
+        staramr)
+            local _t="$asm_id"
+            local resfinder_id="${_t%%@*}"
+            _t="${_t#*@}"
+            local pointfinder_id="${_t%%@*}"
+            _t="${_t#*@}"
+            local plasmidfinder_id="${_t%%@*}"
+            cat >"${fname}" <<EOF
+data_managers:
+  - id: $tool_id
+    params:
+      - 'resfinder_database_select': '${resfinder_id}'
+      - 'pointfinder_database_select': '${pointfinder_id}'
+      - 'plasmidfinder_database_select': '${plasmidfinder_id}'
+EOF
+            ;;
+        salmon)
+            local dbkey="$asm_id"
+            cat >"${fname}" <<EOF
+data_managers:
+  - id: $tool_id
+    params:
+      - 'all_fasta_source': '${dbkey}'
+      - 'sequence_id': '${dbkey}'
+EOF
+            ;;
         funannotate|checkm2)
             cat >"${fname}" <<EOF
 data_managers:
   - id: $tool_id
     params: []
+EOF
+            ;;
+        busco_options)
+            local cached_db="$asm_id"
+            # FIXME: doesn't belong here
+            log_exec grep "^${cached_db}"$'\t' "/cvmfs/$REPO/${CONFIG_DIR}/busco_database.loc" | tee "${SHARED_ROOT}/tool-data/config/busco_database.loc"
+            reload_data_tables 'busco_database'
+            cat >"${fname}" <<EOF
+data_managers:
+  - id: $tool_id
+    params:
+      - 'cached_db': '${cached_db}'
 EOF
             ;;
         *)
@@ -954,8 +999,10 @@ function link_shared_to_cvmfs() {
         "${SHARED_ROOT}/tool-data/${dbkey}/len"
     log_exec test -f "/cvmfs/${REPO}/${DATA_DIR}/${dbkey}/seq/${dbkey}.fa"
     log_exec grep "^${dbkey}"$'\t' "/cvmfs/$REPO/${CONFIG_DIR}/all_fasta.loc" | tee "${SHARED_ROOT}/tool-data/config/all_fasta.loc"
-    log_exec test -f "/cvmfs/${REPO}/${DATA_DIR}/${dbkey}/len/${dbkey}.len"
-    log_exec grep "^${dbkey}"$'\t' "/cvmfs/$REPO/${CONFIG_DIR}/dbkeys.loc" | tee "${SHARED_ROOT}/tool-data/config/dbkeys.loc"
+    if ! $UCSC; then
+        log_exec test -f "/cvmfs/${REPO}/${DATA_DIR}/${dbkey}/len/${dbkey}.len"
+        log_exec grep "^${dbkey}"$'\t' "/cvmfs/$REPO/${CONFIG_DIR}/dbkeys.loc" | tee "${SHARED_ROOT}/tool-data/config/dbkeys.loc"
+    fi
 }
 
 
@@ -1140,13 +1187,17 @@ function main() {
     if [ -n "$RUN_ID" ]; then
         dm="${RUN_ID%%-*}"
         asm_id="${RUN_ID#*-}"
+        if [ -n "$DBKEY" ]; then
+            log "Forced asm_id=dbkey=$DBKEY"
+            ASSEMBLY_LIST["$asm_id"]="$DBKEY"
+        fi
         [ "$dm" != 'fetch' ] || log_exit_error "NOT IMPLEMENTED"
         log "Performing run: ${RUN_ID}"
         log_debug "dm=$dm asm_id=$asm_id"
         setup_ephemeris
         setup_galaxy
         case "$dm" in
-            kraken2|funannotate|checkm2)
+            kraken2|funannotate|checkm2|staramr|busco_options)
                 do_non_genome_run "$dm" "$asm_id"
                 ;;
             *)
