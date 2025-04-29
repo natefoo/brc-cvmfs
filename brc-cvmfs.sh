@@ -6,15 +6,15 @@ export REPO_STRATUM0='cvmfs0-psu0.galaxyproject.org'
 #export REPO='sandbox.galaxyproject.org'
 #export REPO_USER='sandbox'
 
-#export REPO='brc.galaxyproject.org'
-#export REPO_USER='brc'
-#export CONFIG_DIR='config'
-#export DATA_DIR='data'
+export REPO='brc.galaxyproject.org'
+export REPO_USER='brc'
+export CONFIG_DIR='config'
+export DATA_DIR='data'
 
-export REPO='data.galaxyproject.org'
-export REPO_USER='data'
-export CONFIG_DIR='byhand/location'
-export DATA_DIR='byhand'
+#export REPO='data.galaxyproject.org'
+#export REPO_USER='data'
+#export CONFIG_DIR='byhand/location'
+#export DATA_DIR='byhand'
 
 # Set this variable to 'true' to publish on successful installation
 : ${PUBLISH:=false}
@@ -79,7 +79,7 @@ declare -rA DM_LIST=(
     ['bwa_mem']='devteam/data_manager_bwa_mem_index_builder/bwa_mem_index_builder_data_manager'
     ['bwa_mem2']='iuc/data_manager_bwa_mem2_index_builder/bwa_mem2_index_builder_data_manager'
     ['star']='iuc/data_manager_star_index_builder/rna_star_index_builder_data_manager'
-    ['hisat2']='iuc/data_manager_hisat2_index_builder/hisat2_index_builder_data_manager'
+    ['hisat2']='testtoolshed.g2.bx.psu.edu/nate/data_manager_hisat2_index_builder/hisat2_index_builder_data_manager'
     ['funannotate']='iuc/data_manager_funannotate/data_manager_funannotate'
     ['kraken2']='iuc/data_manager_build_kraken2_database/kraken2_build_database'
     ['checkm2']='iuc/checkm2_build_database/checkm2_build_database'
@@ -659,18 +659,26 @@ function install_data_managers() {
 function install_data_manager() {
     local dm_repo a dm_version_url dm_version dm_tool
     local dm="$1"
+    local dm_shed='toolshed.g2.bx.psu.edu'
     dm_repo="${DM_LIST[$dm]}"
     readarray -td/ a < <(echo -n "$dm_repo")
+    if [[ ${#a[@]} -eq 4 ]]; then
+        dm_shed=${a[0]}
+        unset 'a[0]'
+        dm_repo=$(IFS=/; echo "${a[*]}")
+        a=("${a[@]}")
+    fi
     log_exec shed-tools install -g "$GALAXY_URL" -a "$GALAXY_ADMIN_API_KEY" \
         --skip_install_resolver_dependencies \
         --skip_install_repository_dependencies \
+        --tool-shed "https://${dm_shed}" \
         --owner "${a[0]}" \
         --name "${a[1]}"
     dm_version_url="${GALAXY_URL}/api/tools?key=${GALAXY_ADMIN_API_KEY}&tool_id=${a[2]}"
     # this breaks on e.g. +galaxy versions, hopefully they are already sorted (and there should be only one anyway)
     #dm_version=$(curl "$dm_version_url" | jq -r 'sort_by(split(".") | map(tonumber))[-1]')
     dm_version=$(curl "$dm_version_url" | jq -r '.[-1]')
-    dm_tool="toolshed.g2.bx.psu.edu/repos/${dm_repo}/${dm_version}"
+    dm_tool="${dm_shed}/repos/${dm_repo}/${dm_version}"
     log "DM tool for '${dm}' is: ${dm_tool}"
     DM_TOOL_IDS[$dm]="$dm_tool"
 }
@@ -706,9 +714,9 @@ function dbkey_to_genome_file() {
     local dbkey="$1"
     # TODO: this is a bit clumsy
     if [ -n "$RUN_ID" ]; then
-        echo "/cvmfs/${REPO}/${DATA_DIR}/${dbkey}/seq/${dbkey}.fa"
+        echo "/cvmfs/${REPO}/${DATA_DIR}/genomes/${dbkey}/seq/${dbkey}.fa"
     else
-        echo "${SHARED_ROOT}/tool-data/${dbkey}/seq/${dbkey}.fa"
+        echo "${SHARED_ROOT}/tool-data/genomes/${dbkey}/seq/${dbkey}.fa"
     fi
 }
 
@@ -957,13 +965,13 @@ function post_import_fetch_dm() {
     log "Linking sequence and len for indexers"
     log_exec rm -rf "${SHARED_ROOT}/tool-data"
     log_exec mkdir -p "${SHARED_ROOT}/tool-data/config" \
-        "${SHARED_ROOT}/tool-data/${dbkey}/seq" \
-        "${SHARED_ROOT}/tool-data/${dbkey}/len"
+        "${SHARED_ROOT}/tool-data/genomes/${dbkey}/seq" \
+        "${SHARED_ROOT}/tool-data/genomes/${dbkey}/len"
     log_exec test -f "${file_name/.dat/_files}/${dbkey}.fa"
-    log_exec ln "${file_name/.dat/_files}/${dbkey}.fa" "${SHARED_ROOT}/tool-data/${dbkey}/seq/${dbkey}.fa"
+    log_exec ln "${file_name/.dat/_files}/${dbkey}.fa" "${SHARED_ROOT}/tool-data/genomes/${dbkey}/seq/${dbkey}.fa"
     if ! $UCSC; then
         log_exec test -f "${file_name/.dat/_files}/${dbkey}.len"
-        log_exec ln "${file_name/.dat/_files}/${dbkey}.len" "${SHARED_ROOT}/tool-data/${dbkey}/len/${dbkey}.len"
+        log_exec ln "${file_name/.dat/_files}/${dbkey}.len" "${SHARED_ROOT}/tool-data/genomes/${dbkey}/len/${dbkey}.len"
     fi
     log "Updating loc files for indexers"
     exec_on tail -1 "${OVERLAYFS_MOUNT}/${CONFIG_DIR}/all_fasta.loc" | sed "s#/cvmfs/${REPO}/${DATA_DIR}#${SHARED_ROOT}/tool-data#" > "${SHARED_ROOT}/tool-data/config/all_fasta.loc"
@@ -979,12 +987,12 @@ function fetch_twobit() {
     local dbkey=${ASSEMBLY_LIST[$asm_id]}
     # there is no "download twobit" DM and there is little harm in doing it this way
     local name=${ASSEMBLY_NAMES[$asm_id]}
-    local path="/cvmfs/${REPO}/${DATA_DIR}/${dbkey}/seq/${dbkey}.2bit"
+    local path="/cvmfs/${REPO}/${DATA_DIR}/genomes/${dbkey}/seq/${dbkey}.2bit"
     log "Fetching UCSC 2bit to ${path}"
-    exec_on curl -o "${OVERLAYFS_MOUNT}/${DATA_DIR}/${dbkey}/seq/${dbkey}.2bit" "$(ucsc_url "$asm_id" "$dbkey" '2bit')"
+    exec_on curl -o "${OVERLAYFS_MOUNT}/${DATA_DIR}/genomes/${dbkey}/seq/${dbkey}.2bit" "$(ucsc_url "$asm_id" "$dbkey" '2bit')"
     printf '%s\t%s\n' "$dbkey" "$path" | exec_on tee -a "${OVERLAYFS_MOUNT}/${CONFIG_DIR}/twobit.loc"
     printf '%s\t%s\t%s\n' "$dbkey" "$name" "$path" | exec_on tee -a "${OVERLAYFS_MOUNT}/${CONFIG_DIR}/lastz_seqs.loc"
-    exec_on ls -lh "${OVERLAYFS_MOUNT}/${DATA_DIR}/${dbkey}/seq/"
+    exec_on ls -lh "${OVERLAYFS_MOUNT}/${DATA_DIR}/genomes/${dbkey}/seq/"
 }
 
 
@@ -995,12 +1003,12 @@ function link_shared_to_cvmfs() {
     log "Updating loc files for indexers"
     log_exec rm -rf "${SHARED_ROOT}/tool-data"
     log_exec mkdir -p "${SHARED_ROOT}/tool-data/config" \
-        "${SHARED_ROOT}/tool-data/${dbkey}/seq" \
-        "${SHARED_ROOT}/tool-data/${dbkey}/len"
-    log_exec test -f "/cvmfs/${REPO}/${DATA_DIR}/${dbkey}/seq/${dbkey}.fa"
+        "${SHARED_ROOT}/tool-data/genomes/${dbkey}/seq" \
+        "${SHARED_ROOT}/tool-data/genomes/${dbkey}/len"
+    log_exec test -f "/cvmfs/${REPO}/${DATA_DIR}/genomes/${dbkey}/seq/${dbkey}.fa"
     log_exec grep "^${dbkey}"$'\t' "/cvmfs/$REPO/${CONFIG_DIR}/all_fasta.loc" | tee "${SHARED_ROOT}/tool-data/config/all_fasta.loc"
     if ! $UCSC; then
-        log_exec test -f "/cvmfs/${REPO}/${DATA_DIR}/${dbkey}/len/${dbkey}.len"
+        log_exec test -f "/cvmfs/${REPO}/${DATA_DIR}/genomes/${dbkey}/len/${dbkey}.len"
         log_exec grep "^${dbkey}"$'\t' "/cvmfs/$REPO/${CONFIG_DIR}/dbkeys.loc" | tee "${SHARED_ROOT}/tool-data/config/dbkeys.loc"
     fi
 }
