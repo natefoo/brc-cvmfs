@@ -1,20 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+HGDOWNLOAD='hgdownload2.soe.ucsc.edu'
+
 export REPO_STRATUM0='cvmfs0-psu0.galaxyproject.org'
 
 #export REPO='sandbox.galaxyproject.org'
 #export REPO_USER='sandbox'
 
-export REPO='brc.galaxyproject.org'
-export REPO_USER='brc'
-export CONFIG_DIR='config'
-export DATA_DIR='data'
+# SET FOR BRC
+#export REPO='brc.galaxyproject.org'
+#export REPO_USER='brc'
+#export CONFIG_DIR='config'
+#export DATA_DIR='data'
+#export NORMALIZED_SUBDIR='genomes/'
+#declare -rA DM_REVISIONS=()
+# https://github.com/galaxyproject/tools-iuc/pull/6939
+#declare -rA DM_TOOLSHEDS=(
+#    ['hisat2']='testtoolshed.g2.bx.psu.edu'
+#)
+#SKIP_LIST_FILE='skip_list.brc.txt'
+#ASSEMBLY_LIST_URL="https://${HGDOWNLOAD}/hubs/BRC/assemblyList.json"
 
-#export REPO='data.galaxyproject.org'
-#export REPO_USER='data'
-#export CONFIG_DIR='byhand/location'
-#export DATA_DIR='byhand'
+# SET FOR BYHAND
+export REPO='data.galaxyproject.org'
+export REPO_USER='data'
+export CONFIG_DIR='byhand/location'
+export DATA_DIR='byhand'
+export NORMALIZED_SUBDIR=
+declare -rA DM_REVISIONS=(
+    ['fetch']='4d3eff1bc421'
+    ['fasta']='a256278e5bff'
+    ['bowtie1']='39a922d01b0d'
+    ['bowtie2']='9dd107db92c2'
+    ['bwa_mem']='9e993022c762'
+    ['star']='d63c1442407f'
+    ['hisat2']='d74c740bdb25'
+)
+declare -rA DM_TOOLSHEDS=()
+SKIP_LIST_FILE='skip_list.data.txt'
+ASSEMBLY_LIST_URL="https://api.genome.ucsc.edu/list/ucscGenomes"
+
 
 # Set this variable to 'true' to publish on successful installation
 : ${PUBLISH:=false}
@@ -42,10 +68,6 @@ export TMPDIR="${WORKDIR}/tmp"
 rm -rf "${TMPDIR}"
 mkdir -p "${TMPDIR}"
 
-HGDOWNLOAD='hgdownload2.soe.ucsc.edu'
-ASSEMBLY_LIST_URL="https://${HGDOWNLOAD}/hubs/BRC/assemblyList.json"
-
-SKIP_LIST_FILE='skip_list.txt'
 declare -a SKIP_LIST
 
 # could use the dict keys but this stays sorted
@@ -79,7 +101,7 @@ declare -rA DM_LIST=(
     ['bwa_mem']='devteam/data_manager_bwa_mem_index_builder/bwa_mem_index_builder_data_manager'
     ['bwa_mem2']='iuc/data_manager_bwa_mem2_index_builder/bwa_mem2_index_builder_data_manager'
     ['star']='iuc/data_manager_star_index_builder/rna_star_index_builder_data_manager'
-    ['hisat2']='testtoolshed.g2.bx.psu.edu/nate/data_manager_hisat2_index_builder/hisat2_index_builder_data_manager'
+    ['hisat2']='iuc/data_manager_hisat2_index_builder/hisat2_index_builder_data_manager'
     ['funannotate']='iuc/data_manager_funannotate/data_manager_funannotate'
     ['kraken2']='iuc/data_manager_build_kraken2_database/kraken2_build_database'
     ['checkm2']='iuc/checkm2_build_database/checkm2_build_database'
@@ -88,11 +110,7 @@ declare -rA DM_LIST=(
     ['busco_options']='iuc/data_manager_fetch_busco/busco_fetcher_options'
 )
 
-# https://github.com/galaxyproject/tools-iuc/pull/6536
-declare -A DM_TOOL_IDS=(
-)
-#    ['kraken2']='testtoolshed.g2.bx.psu.edu/repos/nate/data_manager_build_kraken2_database/kraken2_build_database/2.1.3+galaxy5'
-#)
+declare -A DM_TOOL_IDS=()
 
 export DM_CONFIGS="${WORKDIR}/dm_configs"
 
@@ -277,16 +295,24 @@ function fetch_assembly_list() {
             log_exec curl -O "$ASSEMBLY_LIST_URL"
         fi
     fi
-    #ASSEMBLY_LIST=( $(jq -cr '.data[] | (.refSeq // .genBank)' "$assembly_list_file" | LC_ALL=C sort) )
-    # TODO: bash assoc arrays are not ordered (or rather, they are hash ordered), it would probably be better to put asm_ids in a normal array
-    while IFS=$'\t' read -r asm_id dbkey sci_name com_name; do
-        ASSEMBLY_LIST["$asm_id"]="$dbkey"
-        if $UCSC; then
-            ASSEMBLY_NAMES["$asm_id"]="$com_name"
-        else
-            ASSEMBLY_NAMES["$asm_id"]="$sci_name ($asm_id)"
-        fi
-    done < <(jq -cr '.data[] | [.asmId, (.refSeq // .genBank // .asmId), .sciName, .comName] | @tsv' "$assembly_list_file")
+    if [ "$(basename $assembly_list_file)" = 'ucscGenomes' ]; then
+        while IFS=$'\t' read -r dbkey organism description; do
+            ASSEMBLY_LIST["$dbkey"]="$dbkey"
+            ASSEMBLY_NAMES["$dbkey"]="$organism $description"
+        done < <(jq -cr '.ucscGenomes | to_entries[] | [.key, .value.organism, .value.description] | @tsv' "$assembly_list_file")
+    else
+        #ASSEMBLY_LIST=( $(jq -cr '.data[] | (.refSeq // .genBank)' "$assembly_list_file" | LC_ALL=C sort) )
+        # TODO: bash assoc arrays are not ordered (or rather, they are hash ordered), it would probably be better to put asm_ids in a normal array
+        while IFS=$'\t' read -r asm_id dbkey sci_name com_name; do
+            ASSEMBLY_LIST["$asm_id"]="$dbkey"
+            if $UCSC; then
+                # this would only be used if you hand-crafted an assemblyList.json of UCSC genomes
+                ASSEMBLY_NAMES["$asm_id"]="$com_name"
+            else
+                ASSEMBLY_NAMES["$asm_id"]="$sci_name ($asm_id)"
+            fi
+        done < <(jq -cr '.data[] | [.asmId, (.refSeq // .genBank // .asmId), .sciName, .comName] | @tsv' "$assembly_list_file")
+    fi
     log "Total ${#ASSEMBLY_LIST[@]} assemblies at UCSC"
     #declare -p ASSEMBLY_LIST
     #declare -p ASSEMBLY_NAMES
@@ -657,23 +683,28 @@ function install_data_managers() {
 
 
 function install_data_manager() {
-    local dm_repo a dm_version_url dm_version dm_tool
+    local dm_repo dm_shed dm_revision a dm_version_url dm_version dm_tool
     local dm="$1"
-    local dm_shed='toolshed.g2.bx.psu.edu'
     dm_repo="${DM_LIST[$dm]}"
-    readarray -td/ a < <(echo -n "$dm_repo")
-    if [[ ${#a[@]} -eq 4 ]]; then
-        dm_shed=${a[0]}
-        unset 'a[0]'
-        dm_repo=$(IFS=/; echo "${a[*]}")
-        a=("${a[@]}")
+    dm_shed="${DM_TOOLSHEDS[$dm]:-toolshed.g2.bx.psu.edu}"
+    dm_revision="${DM_REVISIONS[$dm]:-}"
+    if [ -n "$dm_revision" ]; then
+        dm_revision="--revision $dm_revision"
     fi
+    readarray -td/ a < <(echo -n "$dm_repo")
+    #if [[ ${#a[@]} -eq 4 ]]; then
+    #    dm_shed=${a[0]}
+    #    unset 'a[0]'
+    #    dm_repo=$(IFS=/; echo "${a[*]}")
+    #    a=("${a[@]}")
+    #fi
     log_exec shed-tools install -g "$GALAXY_URL" -a "$GALAXY_ADMIN_API_KEY" \
         --skip_install_resolver_dependencies \
         --skip_install_repository_dependencies \
         --tool-shed "https://${dm_shed}" \
         --owner "${a[0]}" \
-        --name "${a[1]}"
+        --name "${a[1]}" \
+        $dm_revision
     dm_version_url="${GALAXY_URL}/api/tools?key=${GALAXY_ADMIN_API_KEY}&tool_id=${a[2]}"
     # this breaks on e.g. +galaxy versions, hopefully they are already sorted (and there should be only one anyway)
     #dm_version=$(curl "$dm_version_url" | jq -r 'sort_by(split(".") | map(tonumber))[-1]')
@@ -714,9 +745,9 @@ function dbkey_to_genome_file() {
     local dbkey="$1"
     # TODO: this is a bit clumsy
     if [ -n "$RUN_ID" ]; then
-        echo "/cvmfs/${REPO}/${DATA_DIR}/genomes/${dbkey}/seq/${dbkey}.fa"
+        echo "/cvmfs/${REPO}/${DATA_DIR}/${NORMALIZED_SUBDIR}${dbkey}/seq/${dbkey}.fa"
     else
-        echo "${SHARED_ROOT}/tool-data/genomes/${dbkey}/seq/${dbkey}.fa"
+        echo "${SHARED_ROOT}/tool-data/${NORMALIZED_SUBDIR}${dbkey}/seq/${dbkey}.fa"
     fi
 }
 
@@ -965,13 +996,13 @@ function post_import_fetch_dm() {
     log "Linking sequence and len for indexers"
     log_exec rm -rf "${SHARED_ROOT}/tool-data"
     log_exec mkdir -p "${SHARED_ROOT}/tool-data/config" \
-        "${SHARED_ROOT}/tool-data/genomes/${dbkey}/seq" \
-        "${SHARED_ROOT}/tool-data/genomes/${dbkey}/len"
+        "${SHARED_ROOT}/tool-data/${NORMALIZED_SUBDIR}${dbkey}/seq" \
+        "${SHARED_ROOT}/tool-data/${NORMALIZED_SUBDIR}${dbkey}/len"
     log_exec test -f "${file_name/.dat/_files}/${dbkey}.fa"
-    log_exec ln "${file_name/.dat/_files}/${dbkey}.fa" "${SHARED_ROOT}/tool-data/genomes/${dbkey}/seq/${dbkey}.fa"
+    log_exec ln "${file_name/.dat/_files}/${dbkey}.fa" "${SHARED_ROOT}/tool-data/${NORMALIZED_SUBDIR}${dbkey}/seq/${dbkey}.fa"
     if ! $UCSC; then
         log_exec test -f "${file_name/.dat/_files}/${dbkey}.len"
-        log_exec ln "${file_name/.dat/_files}/${dbkey}.len" "${SHARED_ROOT}/tool-data/genomes/${dbkey}/len/${dbkey}.len"
+        log_exec ln "${file_name/.dat/_files}/${dbkey}.len" "${SHARED_ROOT}/tool-data/${NORMALIZED_SUBDIR}${dbkey}/len/${dbkey}.len"
     fi
     log "Updating loc files for indexers"
     exec_on tail -1 "${OVERLAYFS_MOUNT}/${CONFIG_DIR}/all_fasta.loc" | sed "s#/cvmfs/${REPO}/${DATA_DIR}#${SHARED_ROOT}/tool-data#" > "${SHARED_ROOT}/tool-data/config/all_fasta.loc"
@@ -987,12 +1018,12 @@ function fetch_twobit() {
     local dbkey=${ASSEMBLY_LIST[$asm_id]}
     # there is no "download twobit" DM and there is little harm in doing it this way
     local name=${ASSEMBLY_NAMES[$asm_id]}
-    local path="/cvmfs/${REPO}/${DATA_DIR}/genomes/${dbkey}/seq/${dbkey}.2bit"
+    local path="/cvmfs/${REPO}/${DATA_DIR}/${NORMALIZED_SUBDIR}${dbkey}/seq/${dbkey}.2bit"
     log "Fetching UCSC 2bit to ${path}"
-    exec_on curl -o "${OVERLAYFS_MOUNT}/${DATA_DIR}/genomes/${dbkey}/seq/${dbkey}.2bit" "$(ucsc_url "$asm_id" "$dbkey" '2bit')"
+    exec_on curl -o "${OVERLAYFS_MOUNT}/${DATA_DIR}/${NORMALIZED_SUBDIR}${dbkey}/seq/${dbkey}.2bit" "$(ucsc_url "$asm_id" "$dbkey" '2bit')"
     printf '%s\t%s\n' "$dbkey" "$path" | exec_on tee -a "${OVERLAYFS_MOUNT}/${CONFIG_DIR}/twobit.loc"
     printf '%s\t%s\t%s\n' "$dbkey" "$name" "$path" | exec_on tee -a "${OVERLAYFS_MOUNT}/${CONFIG_DIR}/lastz_seqs.loc"
-    exec_on ls -lh "${OVERLAYFS_MOUNT}/${DATA_DIR}/genomes/${dbkey}/seq/"
+    exec_on ls -lh "${OVERLAYFS_MOUNT}/${DATA_DIR}/${NORMALIZED_SUBDIR}${dbkey}/seq/"
 }
 
 
@@ -1003,12 +1034,12 @@ function link_shared_to_cvmfs() {
     log "Updating loc files for indexers"
     log_exec rm -rf "${SHARED_ROOT}/tool-data"
     log_exec mkdir -p "${SHARED_ROOT}/tool-data/config" \
-        "${SHARED_ROOT}/tool-data/genomes/${dbkey}/seq" \
-        "${SHARED_ROOT}/tool-data/genomes/${dbkey}/len"
-    log_exec test -f "/cvmfs/${REPO}/${DATA_DIR}/genomes/${dbkey}/seq/${dbkey}.fa"
+        "${SHARED_ROOT}/tool-data/${NORMALIZED_SUBDIR}${dbkey}/seq" \
+        "${SHARED_ROOT}/tool-data/${NORMALIZED_SUBDIR}${dbkey}/len"
+    log_exec test -f "/cvmfs/${REPO}/${DATA_DIR}/${NORMALIZED_SUBDIR}${dbkey}/seq/${dbkey}.fa"
     log_exec grep "^${dbkey}"$'\t' "/cvmfs/$REPO/${CONFIG_DIR}/all_fasta.loc" | tee "${SHARED_ROOT}/tool-data/config/all_fasta.loc"
     if ! $UCSC; then
-        log_exec test -f "/cvmfs/${REPO}/${DATA_DIR}/genomes/${dbkey}/len/${dbkey}.len"
+        log_exec test -f "/cvmfs/${REPO}/${DATA_DIR}/${NORMALIZED_SUBDIR}${dbkey}/len/${dbkey}.len"
         log_exec grep "^${dbkey}"$'\t' "/cvmfs/$REPO/${CONFIG_DIR}/dbkeys.loc" | tee "${SHARED_ROOT}/tool-data/config/dbkeys.loc"
     fi
 }
