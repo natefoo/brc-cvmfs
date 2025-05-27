@@ -35,7 +35,7 @@ gi = GalaxyInstance(url=args.galaxy_url, **auth_kwargs)
 history = gi.histories.get_histories(name=args.history_name, deleted=False)[0]
 history_id = history['id']
 datasets = gi.datasets.get_datasets(
-    history_id=history_id, extension=EXT, order="create_time-dsc"
+    history_id=history_id, extension=EXT, order="create_time-dsc", deleted=False
 )
 dataset_id = datasets[0]['id']
 print(dataset_id)

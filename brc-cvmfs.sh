@@ -22,24 +22,38 @@ export REPO_STRATUM0='cvmfs0-psu0.galaxyproject.org'
 #SKIP_LIST_FILE='skip_list.brc.txt'
 #ASSEMBLY_LIST_URL="https://${HGDOWNLOAD}/hubs/BRC/assemblyList.json"
 
-# SET FOR BYHAND
-export REPO='data.galaxyproject.org'
-export REPO_USER='data'
-export CONFIG_DIR='byhand/location'
-export DATA_DIR='byhand'
-export NORMALIZED_SUBDIR=
-declare -rA DM_REVISIONS=(
-    ['fetch']='4d3eff1bc421'
-    ['fasta']='a256278e5bff'
-    ['bowtie1']='39a922d01b0d'
-    ['bowtie2']='9dd107db92c2'
-    ['bwa_mem']='9e993022c762'
-    ['star']='d63c1442407f'
-    ['hisat2']='d74c740bdb25'
+# SET FOR VGP
+export REPO='vgp.galaxyproject.org'
+export REPO_USER='vgp'
+export CONFIG_DIR='config'
+export DATA_DIR='data'
+export NORMALIZED_SUBDIR='genomes/'
+declare -rA DM_REVISIONS=()
+# https://github.com/galaxyproject/tools-iuc/pull/6939
+declare -rA DM_TOOLSHEDS=(
+    ['hisat2']='testtoolshed.g2.bx.psu.edu'
 )
-declare -rA DM_TOOLSHEDS=()
-SKIP_LIST_FILE='skip_list.data.txt'
-ASSEMBLY_LIST_URL="https://api.genome.ucsc.edu/list/ucscGenomes"
+SKIP_LIST_FILE='skip_list.vgp.txt'
+ASSEMBLY_LIST_URL="https://${HGDOWNLOAD}/hubs/VGP/assemblyList.json"
+
+# SET FOR BYHAND
+#export REPO='data.galaxyproject.org'
+#export REPO_USER='data'
+#export CONFIG_DIR='byhand/location'
+#export DATA_DIR='byhand'
+#export NORMALIZED_SUBDIR=
+#declare -rA DM_REVISIONS=(
+#    ['fetch']='4d3eff1bc421'
+#    ['fasta']='a256278e5bff'
+#    ['bowtie1']='39a922d01b0d'
+#    ['bowtie2']='9dd107db92c2'
+#    ['bwa_mem']='9e993022c762'
+#    ['star']='d63c1442407f'
+#    ['hisat2']='d74c740bdb25'
+#)
+#declare -rA DM_TOOLSHEDS=()
+#SKIP_LIST_FILE='skip_list.data.txt'
+#ASSEMBLY_LIST_URL="https://api.genome.ucsc.edu/list/ucscGenomes"
 
 
 # Set this variable to 'true' to publish on successful installation
@@ -93,6 +107,7 @@ declare -rA INDEXER_LOC_LIST=(
     ['hisat2']='hisat2_indexes.loc'
 )
 
+#    ['hisat2']='iuc/data_manager_hisat2_index_builder/hisat2_index_builder_data_manager'
 declare -rA DM_LIST=(
     ['fetch']='devteam/data_manager_fetch_genome_dbkeys_all_fasta/data_manager_fetch_genome_all_fasta_dbkey'
     ['fasta']='devteam/data_manager_sam_fasta_index_builder/sam_fasta_index_builder'
@@ -101,7 +116,7 @@ declare -rA DM_LIST=(
     ['bwa_mem']='devteam/data_manager_bwa_mem_index_builder/bwa_mem_index_builder_data_manager'
     ['bwa_mem2']='iuc/data_manager_bwa_mem2_index_builder/bwa_mem2_index_builder_data_manager'
     ['star']='iuc/data_manager_star_index_builder/rna_star_index_builder_data_manager'
-    ['hisat2']='iuc/data_manager_hisat2_index_builder/hisat2_index_builder_data_manager'
+    ['hisat2']='nate/data_manager_hisat2_index_builder/hisat2_index_builder_data_manager'
     ['funannotate']='iuc/data_manager_funannotate/data_manager_funannotate'
     ['kraken2']='iuc/data_manager_build_kraken2_database/kraken2_build_database'
     ['checkm2']='iuc/checkm2_build_database/checkm2_build_database'
@@ -114,8 +129,9 @@ declare -A DM_TOOL_IDS=()
 
 export DM_CONFIGS="${WORKDIR}/dm_configs"
 
-declare -A ASSEMBLY_LIST
+declare -a ASSEMBLY_LIST
 declare -A ASSEMBLY_NAMES
+declare -A ASSEMBLY_DBKEYS
 MISSING_ASSEMBLY_LIST=()
 MISSING_INDEX_LIST=()
 # the list is small, just install everything
@@ -169,9 +185,10 @@ BATCH=0
 RUN_ID=
 DBKEY=
 UCSC=false
+CLEAN=false
 export IMPORT_ONLY=false
 
-while getopts ":1a:b:d:ipn:r:u" opt; do
+while getopts ":1a:b:cd:ipn:r:u" opt; do
     case "$opt" in
         1)
             NUM=1
@@ -182,11 +199,15 @@ while getopts ":1a:b:d:ipn:r:u" opt; do
         b)
             BATCH=$OPTARG
             ;;
+        c)
+            CLEAN=true
+            ;;
         d)
             DBKEY=$OPTARG
             ;;
         i)
             IMPORT_ONLY=true
+            DEVMODE=true
             ;;
         n)
             NUM=$OPTARG
@@ -297,14 +318,16 @@ function fetch_assembly_list() {
     fi
     if [ "$(basename $assembly_list_file)" = 'ucscGenomes' ]; then
         while IFS=$'\t' read -r dbkey organism description; do
-            ASSEMBLY_LIST["$dbkey"]="$dbkey"
+            ASSEMBLY_LIST+=("$dbkey")
+            ASSEMBLY_DBKEYS["$dbkey"]="$dbkey"
             ASSEMBLY_NAMES["$dbkey"]="$organism $description"
         done < <(jq -cr '.ucscGenomes | to_entries[] | [.key, .value.organism, .value.description] | @tsv' "$assembly_list_file")
     else
         #ASSEMBLY_LIST=( $(jq -cr '.data[] | (.refSeq // .genBank)' "$assembly_list_file" | LC_ALL=C sort) )
         # TODO: bash assoc arrays are not ordered (or rather, they are hash ordered), it would probably be better to put asm_ids in a normal array
         while IFS=$'\t' read -r asm_id dbkey sci_name com_name; do
-            ASSEMBLY_LIST["$asm_id"]="$dbkey"
+            ASSEMBLY_LIST+=("$asm_id")
+            ASSEMBLY_DBKEYS["$asm_id"]="$dbkey"
             if $UCSC; then
                 # this would only be used if you hand-crafted an assemblyList.json of UCSC genomes
                 ASSEMBLY_NAMES["$asm_id"]="$com_name"
@@ -323,8 +346,8 @@ function detect_changes() {
     local asm_id dbkey skip do_skip loc dm run_id
     [ -f "$SKIP_LIST_FILE" ] && readarray -t SKIP_LIST < "$SKIP_LIST_FILE"
     declare -p SKIP_LIST
-    for asm_id in "${!ASSEMBLY_LIST[@]}"; do
-        dbkey="${ASSEMBLY_LIST[$asm_id]}"
+    for asm_id in "${ASSEMBLY_LIST[@]}"; do
+        dbkey="${ASSEMBLY_DBKEYS[$asm_id]}"
         do_skip=false
         for skip in "${SKIP_LIST[@]}"; do
             if [ "$asm_id" == "$skip" ]; then
@@ -590,6 +613,9 @@ function setup_galaxy() {
     if [ -d "${SHARED_ROOT}/jobs" ] && ! $DEVMODE; then
         # preserve tools so DMs don't have to be reinstalled
         log_exec rm -rf "$SHARED_ROOT"/{jobs,objects,tool-data}
+        if $CLEAN; then
+            log_exec rm -rf "$SHARED_ROOT"/tools
+        fi
     fi
     log_exec mkdir -p "$SHARED_ROOT" "${SHARED_ROOT}/tool-data/config"
     if [ ! -d "$galaxy" ]; then
@@ -599,6 +625,11 @@ function setup_galaxy() {
         log_exec rm -f "${galaxy}/config/shed_tool_conf.xml" \
                        "${galaxy}/database/universe.sqlite" \
                        "${galaxy}/database/control.sqlite"
+    fi
+    if $CLEAN; then
+        log_exec rm -f "${galaxy}/config/shed_data_manager_conf.xml" \
+                       "${galaxy}/config/shed_tool_data_table_conf.xml" \
+                       "${galaxy}/database/install.sqlite"
     fi
     if [ ! -f "${galaxy}/config/shed_tool_conf.xml" ]; then
         log_exec sed -e "s#SHARED_ROOT#${SHARED_ROOT}#g" shed_tool_conf.xml > "${galaxy}/config/shed_tool_conf.xml"
@@ -737,7 +768,7 @@ function generate_indexer_data_manager_configs() {
 
 function asm_id_to_dbkey() {
     local asm_id="$1"
-    echo "${ASSEMBLY_LIST[$asm_id]}"
+    echo "${ASSEMBLY_DBKEYS[$asm_id]}"
 }
 
 
@@ -989,7 +1020,7 @@ function post_import_fetch_dm() {
     # doing some really horrible stuff here -funroll-loops
     local asm_id="$1"
     local dataset_id="$2"
-    local dbkey=${ASSEMBLY_LIST[$asm_id]}
+    local dbkey=${ASSEMBLY_DBKEYS[$asm_id]}
     local file_name="$(curl -s "${GALAXY_URL}/api/datasets/${dataset_id}?key=${GALAXY_USER_API_KEY}" | jq -r '.file_name')"
     log_debug "Data manager bundle file is: ${file_name}"
     log_exec ls -lh "${file_name/.dat/_files}"
@@ -1015,7 +1046,7 @@ function post_import_fetch_dm() {
 
 function fetch_twobit() {
     local asm_id="$1"
-    local dbkey=${ASSEMBLY_LIST[$asm_id]}
+    local dbkey=${ASSEMBLY_DBKEYS[$asm_id]}
     # there is no "download twobit" DM and there is little harm in doing it this way
     local name=${ASSEMBLY_NAMES[$asm_id]}
     local path="/cvmfs/${REPO}/${DATA_DIR}/${NORMALIZED_SUBDIR}${dbkey}/seq/${dbkey}.2bit"
@@ -1030,7 +1061,7 @@ function fetch_twobit() {
 function link_shared_to_cvmfs() {
     # for running indexers after the genome is published
     local asm_id="$1"
-    local dbkey=${ASSEMBLY_LIST[$asm_id]}
+    local dbkey=${ASSEMBLY_DBKEYS[$asm_id]}
     log "Updating loc files for indexers"
     log_exec rm -rf "${SHARED_ROOT}/tool-data"
     log_exec mkdir -p "${SHARED_ROOT}/tool-data/config" \
@@ -1228,7 +1259,8 @@ function main() {
         asm_id="${RUN_ID#*-}"
         if [ -n "$DBKEY" ]; then
             log "Forced asm_id=dbkey=$DBKEY"
-            ASSEMBLY_LIST["$asm_id"]="$DBKEY"
+            ASSEMBLY_LIST+=("$asm_id")
+            ASSEMBLY_DBKEYS["$asm_id"]="$DBKEY"
         fi
         [ "$dm" != 'fetch' ] || log_exit_error "NOT IMPLEMENTED"
         log "Performing run: ${RUN_ID}"
@@ -1276,11 +1308,13 @@ function main() {
                     begin_transaction 600
                     exec_on mkdir -p "$IMPORT_TMPDIR"
                 fi
-                if ! run_data_manager 'fetch' "$asm_id"; then
-                    log_error "Fetch failed, adding to skip list: ${asm_id}"
-                    SKIP_LIST+=("$asm_id")
-                    $CVMFS_TRANSACTION_UP && abort_transaction
-                    continue
+                if ! $IMPORT_ONLY; then
+                    if ! run_data_manager 'fetch' "$asm_id"; then
+                        log_error "Fetch failed, adding to skip list: ${asm_id}"
+                        SKIP_LIST+=("$asm_id")
+                        $CVMFS_TRANSACTION_UP && abort_transaction
+                        continue
+                    fi
                 fi
                 import_tool_data_bundle 'fetch' "$asm_id"
                 reload_data_tables 'all_fasta' '__dbkeys__'

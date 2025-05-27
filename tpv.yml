@@ -22,8 +22,8 @@ destinations:
       #singularity_volumes: "$defaults,/cvmfs/brc.galaxyproject.org"
       # FIXME: this will break for running indexers on already-published genomes
       #singularity_volumes: "$tool_directory:ro,$job_directory:ro,$working_directory:rw,$default_file_path:rw,SHARED_ROOT/upper:/cvmfs/brc.galaxyproject.org:ro"
-      #singularity_volumes: "$tool_directory:ro,$job_directory:ro,$working_directory:rw,$default_file_path:rw,SHARED_ROOT/tool-data:ro"
-      singularity_volumes: "$tool_directory:ro,$job_directory:rw,$working_directory:rw,$default_file_path:rw,SHARED_ROOT/tool-data:ro,/cvmfs/REPO:ro"
+      singularity_volumes: "$tool_directory:ro,$job_directory:ro,$working_directory:rw,$default_file_path:rw,SHARED_ROOT/tool-data:ro"
+      #singularity_volumes: "$tool_directory:ro,$job_directory:rw,$working_directory:rw,$default_file_path:rw,SHARED_ROOT/tool-data:ro,/cvmfs/REPO:ro"
       require_container: true
     scheduling:
       require:
@@ -33,7 +33,7 @@ tools:
   _default:
     abstract: true
     cores: 1
-    mem: 16
+    mem: 64
   .*data_manager.*:
     scheduling:
       require:
@@ -46,14 +46,25 @@ tools:
       - type: singularity
         shell: /bin/sh
         identifier: /cvmfs/singularity.galaxyproject.org/all/bowtie:1.2.0--py36_0
-  #.*/bowtie2_index_builder_data_manager/.*:
+  .*/bowtie2_index_builder_data_manager/.*:
+    cores: 32
+    mem: 240
   .*/bwa_mem_index_builder_data_manager/.*:
-    mem: 32
+    mem: 64
   .*/bwa_mem2_index_builder_data_manager/.*:
-    mem: 112
+    mem: |
+      import os
+      table_name = "all_fasta"
+      lookup_column = "value"
+      value_column = "path"
+      options = job.get_param_values(app)
+      lookup_value = options["all_fasta_source"]
+      table_value = app.tool_data_tables.get(table_name).get_entry(lookup_column, lookup_value, value_column)
+      mem = int(os.path.getsize(table_value)/1024**3 * 29)
+      round(min(max(mem, 16), 960))
   .*/rna_star_index_builder_data_manager/.*:
-    cores: 16
-    mem: 112
+    cores: 64
+    mem: 480
   #.*/hisat2_index_builder_data_manager/.*:
   .*/kraken2_build_database/.*:
     scheduling:
