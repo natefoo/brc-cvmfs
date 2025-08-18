@@ -41,6 +41,7 @@ tools:
   .*/sam_fasta_index_builder/.*:
     mem: 4
   .*/bowtie_index_builder_data_manager/.*:
+    mem: 92
     params:
       container_override:
       - type: singularity

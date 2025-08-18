@@ -6,6 +6,12 @@ gravity:
   celery:
     enable: false
     enable_beat: false
+  handlers:
+    handler:
+      processes: 1
+      pools:
+        - job-handlers
+        - workflow-schedulers
 
 galaxy:
   database_connection: sqlite:///database/universe.sqlite?isolation_level=IMMEDIATE'
@@ -37,6 +43,10 @@ galaxy:
       slurm:
         load: galaxy.jobs.runners.slurm:SlurmJobRunner
         drmaa_library_path: /usr/lib64/libdrmaa.so.1
+    handling:
+      assign:
+        - db-skip-locked
+      max_grab: 1
     execution:
       default: tpv_dispatcher
       environments:
