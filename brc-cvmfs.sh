@@ -28,13 +28,33 @@ export REPO_STRATUM0='cvmfs0-psu0.galaxyproject.org'
 #ASSEMBLY_LIST_URL="https://${HGDOWNLOAD}/hubs/BRC/assemblyList.json"
 
 # SET FOR VGP
-#export REPO='vgp.galaxyproject.org'
-#export REPO_USER='vgp'
-#export CONFIG_DIR='config'
-#export DATA_DIR='data'
-#export NORMALIZED_SUBDIR='genomes/'
+export REPO='vgp.galaxyproject.org'
+export REPO_USER='vgp'
+export CONFIG_DIR='config'
+export DATA_DIR='data'
+export NORMALIZED_SUBDIR='genomes/'
+declare -rA DM_REVISIONS=()
+declare -rA DM_TOOLSHEDS=()
+SKIP_LIST_FILE='skip_list.vgp.txt'
+ASSEMBLY_LIST_URL="https://${HGDOWNLOAD}/hubs/VGP/assemblyList.json"
+
+# SET FOR BYHAND
+#export REPO='data.galaxyproject.org'
+#export REPO_USER='data'
+#export CONFIG_DIR='byhand/location'
+#export DATA_DIR='byhand'
+#export NORMALIZED_SUBDIR=
 #declare -rA DM_REVISIONS=()
-## https://github.com/galaxyproject/tools-iuc/pull/6939
+##declare -rA DM_REVISIONS=(
+##    ['fetch']='4d3eff1bc421'
+##    ['fasta']='a256278e5bff'
+##    ['bowtie1']='39a922d01b0d'
+##    ['bowtie2']='9dd107db92c2'
+##    ['bwa_mem']='9e993022c762'
+##    ['star']='d63c1442407f'
+##    ['hisat2']='d74c740bdb25'
+##)
+##declare -rA DM_TOOLSHEDS=()
 #declare -rA DM_TOOLSHEDS=(
 #    ['bowtie1']='testtoolshed.g2.bx.psu.edu'
 #    ['bowtie2']='testtoolshed.g2.bx.psu.edu'
@@ -42,35 +62,8 @@ export REPO_STRATUM0='cvmfs0-psu0.galaxyproject.org'
 #    ['bwa_mem2']='testtoolshed.g2.bx.psu.edu'
 #    ['hisat2']='testtoolshed.g2.bx.psu.edu'
 #)
-#SKIP_LIST_FILE='skip_list.vgp.txt'
-#ASSEMBLY_LIST_URL="https://${HGDOWNLOAD}/hubs/VGP/assemblyList.json"
-
-# SET FOR BYHAND
-export REPO='data.galaxyproject.org'
-export REPO_USER='data'
-export CONFIG_DIR='byhand/location'
-export DATA_DIR='byhand'
-export NORMALIZED_SUBDIR=
-declare -rA DM_REVISIONS=()
-#declare -rA DM_REVISIONS=(
-#    ['fetch']='4d3eff1bc421'
-#    ['fasta']='a256278e5bff'
-#    ['bowtie1']='39a922d01b0d'
-#    ['bowtie2']='9dd107db92c2'
-#    ['bwa_mem']='9e993022c762'
-#    ['star']='d63c1442407f'
-#    ['hisat2']='d74c740bdb25'
-#)
-#declare -rA DM_TOOLSHEDS=()
-declare -rA DM_TOOLSHEDS=(
-    ['bowtie1']='testtoolshed.g2.bx.psu.edu'
-    ['bowtie2']='testtoolshed.g2.bx.psu.edu'
-    ['bwa_mem']='testtoolshed.g2.bx.psu.edu'
-    ['bwa_mem2']='testtoolshed.g2.bx.psu.edu'
-    ['hisat2']='testtoolshed.g2.bx.psu.edu'
-)
-SKIP_LIST_FILE='skip_list.data.txt'
-ASSEMBLY_LIST_URL="https://api.genome.ucsc.edu/list/ucscGenomes"
+#SKIP_LIST_FILE='skip_list.data.txt'
+#ASSEMBLY_LIST_URL="https://api.genome.ucsc.edu/list/ucscGenomes"
 
 
 # Set this variable to 'true' to publish on successful installation
