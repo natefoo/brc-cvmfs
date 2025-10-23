@@ -186,6 +186,7 @@ export USE_LOCAL_OVERLAYFS=false
 #
 
 ASSEMBLY_LIST_FILE=
+ASSEMBLY_LIST_ORDER_FILE=
 export SSH_MASTER_SOCKET=
 SSH_MASTER_SOCKET_CREATED=false
 OVERLAYFS_UPPER=
@@ -210,7 +211,7 @@ UCSC=false
 CLEAN=false
 export IMPORT_ONLY=false
 
-while getopts ":1a:b:cd:ipn:r:u" opt; do
+while getopts ":1a:b:cd:io:pn:r:u" opt; do
     case "$opt" in
         1)
             NUM=1
@@ -230,6 +231,9 @@ while getopts ":1a:b:cd:ipn:r:u" opt; do
         i)
             IMPORT_ONLY=true
             DEVMODE=true
+            ;;
+        o)
+            ASSEMBLY_LIST_ORDER_FILE="$OPTARG"
             ;;
         n)
             NUM=$OPTARG
@@ -327,7 +331,7 @@ export -f exec_on
 
 
 function fetch_assembly_list() {
-    local asm_id dbkey sci_name com_name
+    local asm_id dbkey sci_name com_name a i j m
     local assembly_list_file
     # prefer refSeq IDs to genBank per Hiram
     if [ -n "$ASSEMBLY_LIST_FILE" ]; then
@@ -357,6 +361,22 @@ function fetch_assembly_list() {
                 ASSEMBLY_NAMES["$asm_id"]="$sci_name ($asm_id)"
             fi
         done < <(jq -cr '.data[] | [.asmId, (.refSeq // .genBank // .asmId), .sciName, .comName] | @tsv' "$assembly_list_file")
+    fi
+    if [[ -n $ASSEMBLY_LIST_ORDER_FILE ]]; then
+        log "Overriding assembly list order with ${ASSEMBLY_LIST_ORDER_FILE}"
+        ASSEMBLY_LIST=()
+        readarray -t a < "$ASSEMBLY_LIST_ORDER_FILE"
+        for i in "${a[@]}"; do
+            m=false
+            for j in "${!ASSEMBLY_NAMES[@]}"; do
+                if [ "$i" == "$j" ]; then
+                    m=true
+                    ASSEMBLY_LIST+=("$j")
+                    break
+                fi
+            done
+            $m || log_error "Order build not found in assemblyList.json: $i"
+        done
     fi
     log "Total ${#ASSEMBLY_LIST[@]} assemblies at UCSC"
     #declare -p ASSEMBLY_LIST
