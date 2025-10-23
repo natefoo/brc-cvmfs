@@ -14,7 +14,8 @@ destinations:
     context:
       time: "48:00:00"
       #partition: "priority"
-      partition: "tpv"
+      #partition: "tpv"
+      partition: "vgp"
     params:
       embed_metadata_in_job: false
       native_specification: "--nodes=1 --ntasks={cores} --mem={round(mem*1024)} --time={time} --partition={partition}"
