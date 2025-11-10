@@ -9,6 +9,16 @@ export REPO_STRATUM0='cvmfs0-psu0.galaxyproject.org'
 #export REPO='sandbox.galaxyproject.org'
 #export REPO_USER='sandbox'
 
+# DM_TOOLSHEDS works like:
+#declare -rA DM_TOOLSHEDS=(
+#    ['bowtie1']='testtoolshed.g2.bx.psu.edu'
+#)
+
+# DM_REVISIONS works like:
+#declare -rA DM_REVISIONS=(
+#    ['fetch']='4d3eff1bc421'
+#)
+
 # SET FOR BRC
 #export REPO='brc.galaxyproject.org'
 #export REPO_USER='brc'
@@ -16,35 +26,28 @@ export REPO_STRATUM0='cvmfs0-psu0.galaxyproject.org'
 #export DATA_DIR='data'
 #export NORMALIZED_SUBDIR='genomes/'
 #declare -rA DM_REVISIONS=()
-## https://github.com/galaxyproject/tools-iuc/pull/6939
-#declare -rA DM_TOOLSHEDS=(
-#    ['bowtie1']='testtoolshed.g2.bx.psu.edu'
-#    ['bowtie2']='testtoolshed.g2.bx.psu.edu'
-#    ['bwa_mem']='testtoolshed.g2.bx.psu.edu'
-#    ['bwa_mem2']='testtoolshed.g2.bx.psu.edu'
-#    ['hisat2']='testtoolshed.g2.bx.psu.edu'
-#)
+#declare -rA DM_TOOLSHEDS=()
 #SKIP_LIST_FILE='skip_list.brc.txt'
 #ASSEMBLY_LIST_URL="https://${HGDOWNLOAD}/hubs/BRC/assemblyList.json"
 
 # SET FOR VGP
-export REPO='vgp.galaxyproject.org'
-export REPO_USER='vgp'
-export CONFIG_DIR='config'
-export DATA_DIR='data'
-export NORMALIZED_SUBDIR='genomes/'
-declare -rA DM_REVISIONS=()
-declare -rA DM_TOOLSHEDS=()
-SKIP_LIST_FILE='skip_list.vgp.txt'
-ASSEMBLY_LIST_URL="https://${HGDOWNLOAD}/hubs/VGP/assemblyList.json"
+#export REPO='vgp.galaxyproject.org'
+#export REPO_USER='vgp'
+#export CONFIG_DIR='config'
+#export DATA_DIR='data'
+#export NORMALIZED_SUBDIR='genomes/'
+#declare -rA DM_REVISIONS=()
+#declare -rA DM_TOOLSHEDS=()
+#SKIP_LIST_FILE='skip_list.vgp.txt'
+#ASSEMBLY_LIST_URL="https://${HGDOWNLOAD}/hubs/VGP/assemblyList.json"
 
 # SET FOR BYHAND
-#export REPO='data.galaxyproject.org'
-#export REPO_USER='data'
-#export CONFIG_DIR='byhand/location'
-#export DATA_DIR='byhand'
-#export NORMALIZED_SUBDIR=
-#declare -rA DM_REVISIONS=()
+export REPO='data.galaxyproject.org'
+export REPO_USER='data'
+export CONFIG_DIR='byhand/location'
+export DATA_DIR='byhand'
+export NORMALIZED_SUBDIR=
+declare -rA DM_REVISIONS=()
 ##declare -rA DM_REVISIONS=(
 ##    ['fetch']='4d3eff1bc421'
 ##    ['fasta']='a256278e5bff'
@@ -54,16 +57,16 @@ ASSEMBLY_LIST_URL="https://${HGDOWNLOAD}/hubs/VGP/assemblyList.json"
 ##    ['star']='d63c1442407f'
 ##    ['hisat2']='d74c740bdb25'
 ##)
-##declare -rA DM_TOOLSHEDS=()
-#declare -rA DM_TOOLSHEDS=(
-#    ['bowtie1']='testtoolshed.g2.bx.psu.edu'
-#    ['bowtie2']='testtoolshed.g2.bx.psu.edu'
-#    ['bwa_mem']='testtoolshed.g2.bx.psu.edu'
-#    ['bwa_mem2']='testtoolshed.g2.bx.psu.edu'
-#    ['hisat2']='testtoolshed.g2.bx.psu.edu'
-#)
-#SKIP_LIST_FILE='skip_list.data.txt'
-#ASSEMBLY_LIST_URL="https://api.genome.ucsc.edu/list/ucscGenomes"
+declare -rA DM_TOOLSHEDS=()
+##declare -rA DM_TOOLSHEDS=(
+##    ['bowtie1']='testtoolshed.g2.bx.psu.edu'
+##    ['bowtie2']='testtoolshed.g2.bx.psu.edu'
+##    ['bwa_mem']='testtoolshed.g2.bx.psu.edu'
+##    ['bwa_mem2']='testtoolshed.g2.bx.psu.edu'
+##    ['hisat2']='testtoolshed.g2.bx.psu.edu'
+##)
+SKIP_LIST_FILE='skip_list.data.txt'
+ASSEMBLY_LIST_URL="https://api.genome.ucsc.edu/list/ucscGenomes"
 
 
 # Set this variable to 'true' to publish on successful installation
@@ -85,7 +88,7 @@ WORKDIR="${WORKSPACE}/${BUILD_NUMBER}"
 # for cvmfs-fuse.conf
 export WORKDIR
 
-REMOTE_WORKDIR="/tmp/brc-${REPO_USER}"
+REMOTE_WORKDIR="/home/${REPO_USER}/brc-${REPO_USER}"
 
 # for import file streams
 export TMPDIR="${WORKDIR}/tmp"
@@ -138,6 +141,11 @@ declare -rA DM_LIST=(
     ['salmon']='iuc/data_manager_salmon_index_builder/salmon_index_builder_data_manager'
     ['busco_options']='iuc/data_manager_fetch_busco/busco_fetcher_options'
     ['genomad']='ufz/genomad_build_database/genomad_build_database'
+    ['mmseqs2']='iuc/data_manager_mmseqs2_database/data_manager_mmseqs2_download'
+    ['deeparg']='iuc/data_manager_deeparg/data_manager_deeparg'
+    ['sylph']='bgruening/data_manager_sylph_database/data_manager_sylph_database'
+    ['sylph_tax']='bgruening/data_manager_sylph_tax_database/data_manager_sylph_tax_database'
+    ['groot']='iuc/data_manager_groot_database_downloader/groot_database_downloader'
 )
 
 declare -A DM_TOOL_IDS=()
@@ -938,7 +946,7 @@ data_managers:
       - 'sequence_id': '${dbkey}'
 EOF
             ;;
-        funannotate|checkm2)
+        funannotate|checkm2|deeparg|sylph_tax)
             cat >"${fname}" <<EOF
 data_managers:
   - id: $tool_id
@@ -964,6 +972,39 @@ data_managers:
   - id: $tool_id
     params:
       - 'cached_db': '${cached_db}'
+EOF
+            ;;
+        mmseqs2)
+            local db_type_selector="${asm_id%%-*}"
+            local db_type="${db_type_selector%_*}"
+            local database="${asm_id#*-}"
+            cat >"${fname}" <<EOF
+data_managers:
+  - id: $tool_id
+    params:
+      - 'db_name|type': '${db_type_selector}'
+      - 'db_name|db_type': '${db_type}'
+      - 'db_name|database': '${database}'
+EOF
+            ;;
+        sylph)
+            local db_type="${asm_id%%-*}"
+            local db_name="${asm_id#*-}"
+            cat >"${fname}" <<EOF
+data_managers:
+  - id: $tool_id
+    params:
+      - 'db_type|clades': '${db_type}'
+      - 'db_type|db_name|name': '${db_name}'
+EOF
+            ;;
+        groot)
+            local database="$asm_id"
+            cat >"${fname}" <<EOF
+data_managers:
+  - id: $tool_id
+    params:
+      - 'database': '${database}'
 EOF
             ;;
         *)
@@ -1160,6 +1201,8 @@ function check_for_repo_changes() {
     exec_on rm -rf "$IMPORT_TMPDIR"
     log "Contents of OverlayFS upper mount (will be published)"
     exec_on tree "$OVERLAYFS_UPPER"
+    # TODO: shouldn't take long but remove if it does
+    exec_on du -shx "$OVERLAYFS_UPPER"
     mapfile -t configs < <(exec_on compgen -G "'${OVERLAYFS_UPPER}/${CONFIG_DIR}/*'")
     for config in ${configs[@]}; do
         log "Checking diff: $config"
@@ -1312,7 +1355,8 @@ function main() {
         setup_ephemeris
         setup_galaxy
         case "$dm" in
-            kraken2|funannotate|checkm2|staramr|busco_options|genomad)
+            # TODO: make a var for this eh
+            kraken2|funannotate|checkm2|staramr|busco_options|genomad|mmseqs2|deeparg|sylph|sylph_tax|groot)
                 do_non_genome_run "$dm" "$asm_id"
                 ;;
             *)
