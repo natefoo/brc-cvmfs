@@ -48,6 +48,10 @@ export CONFIG_DIR='byhand/location'
 export DATA_DIR='byhand'
 export NORMALIZED_SUBDIR=
 declare -rA DM_REVISIONS=()
+declare -rA DM_TOOLSHEDS=()
+SKIP_LIST_FILE='skip_list.data.txt'
+ASSEMBLY_LIST_URL="https://api.genome.ucsc.edu/list/ucscGenomes"
+
 ##declare -rA DM_REVISIONS=(
 ##    ['fetch']='4d3eff1bc421'
 ##    ['fasta']='a256278e5bff'
@@ -57,7 +61,6 @@ declare -rA DM_REVISIONS=()
 ##    ['star']='d63c1442407f'
 ##    ['hisat2']='d74c740bdb25'
 ##)
-declare -rA DM_TOOLSHEDS=()
 ##declare -rA DM_TOOLSHEDS=(
 ##    ['bowtie1']='testtoolshed.g2.bx.psu.edu'
 ##    ['bowtie2']='testtoolshed.g2.bx.psu.edu'
@@ -65,8 +68,6 @@ declare -rA DM_TOOLSHEDS=()
 ##    ['bwa_mem2']='testtoolshed.g2.bx.psu.edu'
 ##    ['hisat2']='testtoolshed.g2.bx.psu.edu'
 ##)
-SKIP_LIST_FILE='skip_list.data.txt'
-ASSEMBLY_LIST_URL="https://api.genome.ucsc.edu/list/ucscGenomes"
 
 
 # Set this variable to 'true' to publish on successful installation
@@ -146,6 +147,10 @@ declare -rA DM_LIST=(
     ['sylph']='bgruening/data_manager_sylph_database/data_manager_sylph_database'
     ['sylph_tax']='bgruening/data_manager_sylph_tax_database/data_manager_sylph_tax_database'
     ['groot']='iuc/data_manager_groot_database_downloader/groot_database_downloader'
+    ['vibrant']='ufz/vibrant_build_database/vibrant_build_database'
+    ['checkv']='ufz/checkv_build_database/checkv_build_database'
+    ['coreprofiler']='iuc/data_manager_build_coreprofiler/data_manager_build_coreprofiler'
+    ['metaphlan']='iuc/data_manager_metaphlan_database_downloader/data_manager_metaphlan_download'
 )
 
 declare -A DM_TOOL_IDS=()
@@ -936,6 +941,17 @@ data_managers:
       - 'plasmidfinder_database_select': '${plasmidfinder_id}'
 EOF
             ;;
+	coreprofiler)
+            local _t="$asm_id"
+            local db_list="${_t##*-}"
+            cat >"${fname}" <<EOF
+data_managers:
+  - id: $tool_id
+    params:
+      - 'select_db|db_list': '${db_list}'
+      - 'select_db|coreprofiler_scheme_select': '${asm_id}'
+EOF
+            ;;
         salmon)
             local dbkey="$asm_id"
             cat >"${fname}" <<EOF
@@ -946,7 +962,7 @@ data_managers:
       - 'sequence_id': '${dbkey}'
 EOF
             ;;
-        funannotate|checkm2|deeparg|sylph_tax)
+        funannotate|checkm2|deeparg|sylph_tax|vibrant|checkv)
             cat >"${fname}" <<EOF
 data_managers:
   - id: $tool_id
@@ -1005,6 +1021,15 @@ data_managers:
   - id: $tool_id
     params:
       - 'database': '${database}'
+EOF
+            ;;
+        metaphlan)
+            local index="$asm_id"
+            cat >"${fname}" <<EOF
+data_managers:
+  - id: $tool_id
+    params:
+      - 'index': '${index}'
 EOF
             ;;
         *)
@@ -1356,7 +1381,7 @@ function main() {
         setup_galaxy
         case "$dm" in
             # TODO: make a var for this eh
-            kraken2|funannotate|checkm2|staramr|busco_options|genomad|mmseqs2|deeparg|sylph|sylph_tax|groot)
+            kraken2|funannotate|checkm2|staramr|busco_options|genomad|mmseqs2|deeparg|sylph|sylph_tax|groot|vibrant|checkv|coreprofiler|metaphlan)
                 do_non_genome_run "$dm" "$asm_id"
                 ;;
             *)

@@ -83,3 +83,11 @@ tools:
     scheduling:
       require:
         - singularity
+  .*/vibrant_build_database/.*:
+    scheduling:
+      require:
+        - singularity
+  .*/checkv_build_database/.*:
+    scheduling:
+      require:
+        - singularity
