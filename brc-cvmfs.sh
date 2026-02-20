@@ -151,7 +151,9 @@ declare -rA DM_LIST=(
     ['checkv']='ufz/checkv_build_database/checkv_build_database'
     ['coreprofiler']='iuc/data_manager_build_coreprofiler/data_manager_build_coreprofiler'
     ['metaphlan']='iuc/data_manager_metaphlan_database_downloader/data_manager_metaphlan_download'
+    ['gtdbtk']='iuc/data_manager_gtdbtk_database_installer/gtdbtk_database_installer'
 )
+# FIXME: gtdbtk is in managed, not byhand, the last install was built here and rsync'd manually to CVMFS
 
 declare -A DM_TOOL_IDS=()
 
@@ -1032,6 +1034,15 @@ data_managers:
       - 'index': '${index}'
 EOF
             ;;
+        gtdbtk)
+            local release="$asm_id"
+            cat >"${fname}" <<EOF
+data_managers:
+  - id: $tool_id
+    params:
+      - 'release': '${release}'
+EOF
+            ;;
         *)
             local dbkey="$(asm_id_to_dbkey "$asm_id")"
             cat >"${fname}" <<EOF
@@ -1381,7 +1392,7 @@ function main() {
         setup_galaxy
         case "$dm" in
             # TODO: make a var for this eh
-            kraken2|funannotate|checkm2|staramr|busco_options|genomad|mmseqs2|deeparg|sylph|sylph_tax|groot|vibrant|checkv|coreprofiler|metaphlan)
+            kraken2|funannotate|checkm2|staramr|busco_options|genomad|mmseqs2|deeparg|sylph|sylph_tax|groot|vibrant|checkv|coreprofiler|metaphlan|gtdbtk)
                 do_non_genome_run "$dm" "$asm_id"
                 ;;
             *)

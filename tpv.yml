@@ -91,3 +91,7 @@ tools:
     scheduling:
       require:
         - singularity
+  .*/gtdbtk_database_installer/.*:
+    scheduling:
+      require:
+        - singularity
